@@ -1,18 +1,23 @@
+// index.ts
+import { getRegisteredActions } from "./prompts/ActionRegistry.ts";
 import { systemPrompt } from "./prompts/prompts.ts";
-import { tools } from "./tools/tools.ts";
+import { BrowserAgent } from "./tools/BrowserController.ts";
 import type { Message, OpenAIChatRequest, OpenAIResponse } from "./types.ts";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
 if (!OPENAI_API_KEY) {
   throw new Error(
     "Missing OPENAI_API_KEY env variable. Please set it before running the script.",
   );
 }
 
+/**
+ * Call the OpenAI Chat API with the given messages,
+ * returning [assistantText, headers].
+ */
 async function callOpenAI(messages: Message[]): Promise<[string, Headers]> {
   const body: OpenAIChatRequest = {
-    model: "gpt-4o-mini",
+    model: "gpt-4o-mini", // or "gpt-4" or "gpt-3.5-turbo", etc.
     messages,
     temperature: 0.7,
     max_tokens: 500,
@@ -33,8 +38,8 @@ async function callOpenAI(messages: Message[]): Promise<[string, Headers]> {
   }
 
   const data = (await response.json()) as OpenAIResponse;
-
-  return [data.choices[0].message.content, response.headers];
+  const assistantText = data.choices[0].message.content;
+  return [assistantText, response.headers];
 }
 
 function parseToolInvocation(
@@ -42,20 +47,28 @@ function parseToolInvocation(
 ): { tool: string; args: string } | null {
   try {
     const parsed = JSON.parse(message);
-    return parsed;
+    if (
+      parsed &&
+      typeof parsed.tool === "string" &&
+      typeof parsed.args === "string"
+    ) {
+      return { tool: parsed.tool, args: parsed.args };
+    }
   } catch (err) {
-    console.error("Failed to parse tool invocation:", err);
+    console.error("Failed to parse JSON tool invocation:", err);
   }
   return null;
 }
 
 async function main() {
   const userPrompt = process.argv.slice(2).join(" ");
-
   if (!userPrompt) {
     console.error("Usage: bun run index.ts  -- 'Your question or command'");
     return;
   }
+
+  const agent = new BrowserAgent();
+  await agent.init(false);
 
   let messages: Message[] = [
     { role: "system", content: systemPrompt },
@@ -67,34 +80,43 @@ async function main() {
 
   while (true) {
     stepCount++;
-
-    //Sleep for 5 seconds
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    // await new Promise((resolve) => setTimeout(resolve, 5000));
 
     const [response, headers] = await callOpenAI(messages);
-
-    // console.log("headers", headers);
     console.log("\nLLM Agent response:\n", response);
 
     const invocation = parseToolInvocation(response);
     console.log("Parsed tool invocation:", invocation);
 
-    if (invocation && tools[invocation.tool]) {
+    if (invocation) {
+      const toolDef = getRegisteredActions().find(
+        (t) => t.name === invocation.tool,
+      );
+
+      if (!toolDef) {
+        console.log(`\nUnknown tool: '${invocation.tool}'. No action found.\n`);
+        break;
+      }
+
       console.log(
         `Invoking tool '${invocation.tool}' with args: ${invocation.args}`,
       );
-
-      const toolResult = await tools[invocation.tool].func(invocation.args);
+      let toolResult: string;
+      try {
+        toolResult = await toolDef.handler(agent, invocation.args);
+      } catch (e: any) {
+        toolResult = `Error: ${e.message}`;
+      }
 
       const toolIsDomRepresentation =
         invocation.tool === "getInteractiveDomRepresentation";
 
       messages.push({ role: "assistant", content: response });
-      console.log("\nTool result:\n", JSON.stringify(toolResult));
+      console.log("\nTool result:\n", toolResult);
 
       messages.push({
         role: "user",
-        content: `${toolResult}`,
+        content: toolResult,
         isDomRepresentation: toolIsDomRepresentation ? true : undefined,
       });
     } else {
@@ -104,11 +126,13 @@ async function main() {
 
     if (stepCount >= maxSteps) {
       console.warn(
-        `Reached max steps (${maxSteps}), exiting to prevent infinite loop.`,
+        `Reached max steps (${maxSteps}), stopping to prevent infinite loop.`,
       );
       break;
     }
   }
+
+  await agent.close();
 }
 
-main();
+main().catch((err) => console.error("Error in main:", err));
