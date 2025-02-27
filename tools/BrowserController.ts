@@ -38,7 +38,7 @@ export class BrowserAgent {
   }
 
   private async updateDomRepresentation(
-    doHighlightElements = false,
+    doHighlightElements = true,
     focusHighlightIndex = -1,
     viewportExpansion = 0,
   ): Promise<DomTree> {
@@ -48,9 +48,9 @@ export class BrowserAgent {
     }
 
     const dom = (await this.page.evaluate(getDomRepresentation, {
-      doHighlightElements: true,
-      focusHighlightIndex: focusHighlightIndex,
-      viewportExpansion: viewportExpansion,
+      doHighlightElements,
+      focusHighlightIndex,
+      viewportExpansion,
     })) as DomTree;
 
     this.domSnapshot = dom;
@@ -89,7 +89,7 @@ export class BrowserAgent {
       if (node.isInteractive && node.highlightIndex >= 0) {
         clickable.push({
           highlightIndex: node.highlightIndex,
-          snippet: this.getShortText(node),
+          snippet: this.getAllText(node),
         });
       }
       if (node.children) {
