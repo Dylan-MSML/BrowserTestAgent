@@ -211,22 +211,6 @@ export class BrowserAgent {
     return this.domSnapshot;
   }
 
-  private getShortText(node: any): string {
-    const texts: string[] = [];
-    if (node.attributes?.["aria-label"])
-      texts.push(node.attributes["aria-label"]);
-    if (node.attributes?.title) texts.push(node.attributes.title);
-    if (node.children) {
-      for (const c of node.children) {
-        if (c && c.type === "TEXT_NODE" && c.text?.trim()) {
-          texts.push(c.text.trim());
-        }
-      }
-    }
-    const text = texts.join(" ").trim() || node.tagName || "unknown";
-    return text.slice(0, 60);
-  }
-
   private getAllText(node: any): string {
     let text = "";
     const dfs = (n: any) => {
