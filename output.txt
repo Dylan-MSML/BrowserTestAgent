@@ -673,6 +673,2767 @@ import {
   type BrowserContext,
   type Page,
 } from "playwright";
+import getDomRepresentation from "./utils/dom-representation";
+import type { DomTree } from "../types";
+import { BrowserAction } from "../prompts/ActionRegistry";
+
+export class BrowserAgent {
+  private browser: Browser | null = null;
+  private context: BrowserContext | null = null;
+  private page: Page | null = null;
+  private domSnapshot: DomTree | null = null;
+
+  public async init(headless: boolean = false): Promise<void> {
+    this.browser = await chromium.launch({ headless });
+    this.context = await this.browser.newContext({ ignoreHTTPSErrors: true });
+    this.page = await this.context.newPage();
+  }
+
+  public async close(): Promise<void> {
+    if (this.browser) {
+      await this.browser.close();
+    }
+    this.browser = null;
+    this.context = null;
+    this.page = null;
+    this.domSnapshot = null;
+  }
+
+  private async goto(url: string): Promise<void> {
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
+    await this.page.goto(url, { waitUntil: "networkidle" });
+  }
+
+  private async updateDomRepresentation(
+    doHighlightElements = false,
+    focusHighlightIndex = -1,
+    viewportExpansion = 0,
+  ): Promise<DomTree> {
+    this.domSnapshot = null;
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
+    console.log(this.page);
+
+    const dom = (await this.page.evaluate(getDomRepresentation, {
+      doHighlightElements: true,
+      focusHighlightIndex: focusHighlightIndex,
+      viewportExpansion: viewportExpansion,
+    })) as DomTree;
+
+    this.domSnapshot = dom;
+
+    return dom;
+  }
+
+  @BrowserAction(
+    "visitUrl",
+    "Navigate to a specified URL and store the updated DOM internally.",
+  )
+  public async visitUrl(args: string): Promise<string> {
+    const url = args.trim().startsWith("http")
+      ? args.trim()
+      : "https://" + args.trim();
+    await this.goto(url);
+    await this.updateDomRepresentation(true, -1, 0);
+    return `Visited URL: ${url} and updated DOM snapshot.`;
+  }
+
+  @BrowserAction(
+    "listClickableElements",
+    "Returns a JSON array of { highlightIndex, snippet } for clickable elements.",
+  )
+  public async listClickableElements(_args: string): Promise<string> {
+    if (!this.domSnapshot) {
+      return "No DOM snapshot available. Use visitUrl first.";
+    }
+
+    const clickable: Array<{ highlightIndex: number; snippet: string }> = [];
+
+    const walk = (node: any) => {
+      if (!node) return;
+      if (node.isInteractive && node.highlightIndex >= 0) {
+        clickable.push({
+          highlightIndex: node.highlightIndex,
+          snippet: this.getShortText(node),
+        });
+      }
+      if (node.children) {
+        for (const child of node.children) {
+          if (child && typeof child === "object" && "tagName" in child) {
+            walk(child);
+          }
+        }
+      }
+    };
+    walk(this.domSnapshot);
+
+    return JSON.stringify(clickable, null, 2);
+  }
+
+  @BrowserAction(
+    "getElementDetails",
+    "Provide detail about a single element by highlightIndex.",
+  )
+  public async getElementDetails(args: string): Promise<string> {
+    if (!this.domSnapshot)
+      return "No DOM snapshot available. Use visitUrl first.";
+    const index = parseInt(args.trim(), 10);
+    if (isNaN(index)) return `Could not parse highlightIndex from "${args}".`;
+    let found: any = null;
+
+    const walk = (node: any) => {
+      if (!node) return;
+
+      if (node.highlightIndex === index) {
+        found = node;
+      }
+
+      if (node.children && !found) {
+        for (const c of node.children) {
+          if (c && typeof c === "object" && "tagName" in c) {
+            walk(c);
+            if (found) break;
+          }
+        }
+      }
+    };
+    walk(this.domSnapshot);
+    if (!found) return `No element found with highlightIndex = ${index}`;
+
+    const detail = {
+      tagName: found.tagName,
+      attributes: found.attributes,
+      isVisible: found.isVisible,
+      isTopElement: found.isTopElement,
+      textNearby: this.getAllText(found).slice(0, 300),
+    };
+    return JSON.stringify(detail, null, 2);
+  }
+
+  @BrowserAction(
+    "clickElementByHighlightIndex",
+    "Clicks on an element by its highlightIndex in the current DOM",
+  )
+  public async clickElementByHighlightIndex(args: string): Promise<string> {
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
+
+    const highlightIndex = parseInt(args, 10);
+
+    if (isNaN(highlightIndex)) {
+      return `Could not parse highlightIndex from "${args}". Must be a number.`;
+    }
+
+    const selector = `[browser-user-highlight-id="playwright-highlight-${highlightIndex}"]`;
+
+    const elementHandle = await this.page.$(selector);
+
+    if (!elementHandle) {
+      return `Error: No element found with highlightIndex = ${highlightIndex}`;
+    }
+
+    await elementHandle.click();
+
+    await this.page.waitForLoadState("networkidle");
+
+    await this.updateDomRepresentation(true, -1, 0);
+
+    return `Clicked element with highlightIndex = ${highlightIndex}.`;
+  }
+
+  @BrowserAction(
+    "fillInputByHighlightIndex",
+    'Fills an input at "highlightIndex" with text. Format: "<index>||<text>"',
+  )
+  public async fillInputByHighlightIndex(args: string): Promise<string> {
+    if (!this.page) throw new Error("No Page found. Did you call init()?");
+    const [indexStr, ...rest] = args.split("||");
+    const highlightIndex = parseInt(indexStr.trim(), 10);
+    const text = rest.join("||").trim();
+    if (isNaN(highlightIndex)) {
+      return `Could not parse highlightIndex from "${indexStr}". Use "5||Hello world" syntax.`;
+    }
+    if (!text) {
+      return `No text provided. Use "5||Hello world."`;
+    }
+    const selector = `[browser-user-highlight-id="playwright-highlight-${highlightIndex}"]`;
+    const elementHandle = await this.page.$(selector);
+    if (!elementHandle)
+      return `Error: No element found for highlightIndex ${highlightIndex}`;
+    await elementHandle.fill(text);
+    await this.updateDomRepresentation();
+    return `Filled element at highlightIndex ${highlightIndex} with "${text}"`;
+  }
+
+  @BrowserAction("closeBrowser", "Closes the current browser session")
+  public async closeBrowser(_args: string): Promise<string> {
+    await this.close();
+    return "Browser closed successfully.";
+  }
+
+  public getDomSnapshot(): DomTree | null {
+    return this.domSnapshot;
+  }
+
+  private getShortText(node: any): string {
+    const texts: string[] = [];
+    if (node.attributes?.["aria-label"])
+      texts.push(node.attributes["aria-label"]);
+    if (node.attributes?.title) texts.push(node.attributes.title);
+    if (node.children) {
+      for (const c of node.children) {
+        if (c && c.type === "TEXT_NODE" && c.text?.trim()) {
+          texts.push(c.text.trim());
+        }
+      }
+    }
+    const text = texts.join(" ").trim() || node.tagName || "unknown";
+    return text.slice(0, 60);
+  }
+
+  private getAllText(node: any): string {
+    let text = "";
+    const dfs = (n: any) => {
+      if (!n) return;
+      if (n.children) {
+        for (const c of n.children) {
+          if (c && c.type === "TEXT_NODE" && c.text) {
+            text += c.text + " ";
+          } else if (c && typeof c === "object" && "tagName" in c) {
+            dfs(c);
+          }
+        }
+      }
+    };
+    dfs(node);
+    return text.trim();
+  }
+}
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/bun.lock`:
+
+```lock
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "agentllm",
+      "dependencies": {
+        "open": "^10.1.0",
+        "playwright": "^1.50.1",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+      },
+      "peerDependencies": {
+        "typescript": "^5.0.0",
+      },
+    },
+  },
+  "packages": {
+    "@types/bun": ["@types/bun@1.2.2", "", { "dependencies": { "bun-types": "1.2.2" } }, "sha512-tr74gdku+AEDN5ergNiBnplr7hpDp3V1h7fqI2GcR/rsUaM39jpSeKH0TFibRvU0KwniRx5POgaYnaXbk0hU+w=="],
+
+    "@types/node": ["@types/node@22.13.2", "", { "dependencies": { "undici-types": "~6.20.0" } }, "sha512-Z+r8y3XL9ZpI2EY52YYygAFmo2/oWfNSj4BCpAXE2McAexDk8VcnBMGC9Djn9gTKt4d2T/hhXqmPzo4hfIXtTg=="],
+
+    "@types/ws": ["@types/ws@8.5.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-bd/YFLW+URhBzMXurx7lWByOu+xzU9+kb3RboOteXYDfW+tr+JZa99OyNmPINEGB/ahzKrEuc8rcv4gnpJmxTw=="],
+
+    "bun-types": ["bun-types@1.2.2", "", { "dependencies": { "@types/node": "*", "@types/ws": "~8.5.10" } }, "sha512-RCbMH5elr9gjgDGDhkTTugA21XtJAy/9jkKe/G3WR2q17VPGhcquf9Sir6uay9iW+7P/BV0CAHA1XlHXMAVKHg=="],
+
+    "bundle-name": ["bundle-name@4.1.0", "", { "dependencies": { "run-applescript": "^7.0.0" } }, "sha512-tjwM5exMg6BGRI+kNmTntNsvdZS1X8BFYS6tnJ2hdH0kVxM6/eVZ2xy+FqStSWvYmtfFMDLIxurorHwDKfDz5Q=="],
+
+    "default-browser": ["default-browser@5.2.1", "", { "dependencies": { "bundle-name": "^4.1.0", "default-browser-id": "^5.0.0" } }, "sha512-WY/3TUME0x3KPYdRRxEJJvXRHV4PyPoUsxtZa78lwItwRQRHhd2U9xOscaT/YTf8uCXIAjeJOFBVEh/7FtD8Xg=="],
+
+    "default-browser-id": ["default-browser-id@5.0.0", "", {}, "sha512-A6p/pu/6fyBcA1TRz/GqWYPViplrftcW2gZC9q79ngNCKAeR/X3gcEdXQHl4KNXV+3wgIJ1CPkJQ3IHM6lcsyA=="],
+
+    "define-lazy-prop": ["define-lazy-prop@3.0.0", "", {}, "sha512-N+MeXYoqr3pOgn8xfyRPREN7gHakLYjhsHhWGT3fWAiL4IkAt0iDw14QiiEm2bE30c5XX5q0FtAA3CK5f9/BUg=="],
+
+    "fsevents": ["fsevents@2.3.2", "", { "os": "darwin" }, "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA=="],
+
+    "is-docker": ["is-docker@3.0.0", "", { "bin": { "is-docker": "cli.js" } }, "sha512-eljcgEDlEns/7AXFosB5K/2nCM4P7FQPkGc/DWLy5rmFEWvZayGrik1d9/QIY5nJ4f9YsVvBkA6kJpHn9rISdQ=="],
+
+    "is-inside-container": ["is-inside-container@1.0.0", "", { "dependencies": { "is-docker": "^3.0.0" }, "bin": { "is-inside-container": "cli.js" } }, "sha512-KIYLCCJghfHZxqjYBE7rEy0OBuTd5xCHS7tHVgvCLkx7StIoaxwNW3hCALgEUjFfeRk+MG/Qxmp/vtETEF3tRA=="],
+
+    "is-wsl": ["is-wsl@3.1.0", "", { "dependencies": { "is-inside-container": "^1.0.0" } }, "sha512-UcVfVfaK4Sc4m7X3dUSoHoozQGBEFeDC+zVo06t98xe8CzHSZZBekNXH+tu0NalHolcJ/QAGqS46Hef7QXBIMw=="],
+
+    "open": ["open@10.1.0", "", { "dependencies": { "default-browser": "^5.2.1", "define-lazy-prop": "^3.0.0", "is-inside-container": "^1.0.0", "is-wsl": "^3.1.0" } }, "sha512-mnkeQ1qP5Ue2wd+aivTD3NHd/lZ96Lu0jgf0pwktLPtx6cTZiH7tyeGRRHs0zX0rbrahXPnXlUnbeXyaBBuIaw=="],
+
+    "playwright": ["playwright@1.50.1", "", { "dependencies": { "playwright-core": "1.50.1" }, "optionalDependencies": { "fsevents": "2.3.2" }, "bin": { "playwright": "cli.js" } }, "sha512-G8rwsOQJ63XG6BbKj2w5rHeavFjy5zynBA9zsJMMtBoe/Uf757oG12NXz6e6OirF7RCrTVAKFXbLmn1RbL7Qaw=="],
+
+    "playwright-core": ["playwright-core@1.50.1", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-ra9fsNWayuYumt+NiM069M6OkcRb1FZSK8bgi66AtpFoWkg2+y0bJSNmkFrWhMbEBbVKC/EruAHH3g0zmtwGmQ=="],
+
+    "run-applescript": ["run-applescript@7.0.0", "", {}, "sha512-9by4Ij99JUr/MCFBUkDKLWK3G9HVXmabKz9U5MlIAIuvuzkiOicRYs8XJLxX+xahD+mLiiCYDqF9dKAgtzKP1A=="],
+
+    "typescript": ["typescript@5.7.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-84MVSjMEHP+FQRPy3pX9sTVV/INIex71s9TL2Gm5FG/WG1SqXeKyZ0k7/blY/4FdOzI12CBy1vGc4og/eus0fw=="],
+
+    "undici-types": ["undici-types@6.20.0", "", {}, "sha512-Ny6QZ2Nju20vw1SRHe3d9jVu6gJ+4e3+MMpqu7pqE5HT6WsTSlce++GQmK5UXS8mzV8DSYHrQH+Xrf2jVcuKNg=="],
+  }
+}
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/README.md`:
+
+```md
+# agentllm
+
+To install dependencies:
+
+```bash
+bun install
+```
+
+To run:
+
+```bash
+bun run index.ts
+```
+
+This project was created using `bun init` in bun v1.2.2. [Bun](https://bun.sh) is a fast all-in-one JavaScript runtime.
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/types.ts`:
+
+```ts
+export type Message = {
+  role: "system" | "user" | "assistant";
+  content: string;
+  isDomRepresentation?: boolean;
+};
+
+export interface OpenAIChatRequest {
+  model: string;
+  messages: Message[];
+  temperature?: number;
+  max_tokens?: number;
+}
+
+export interface Tool {
+  name: string;
+  description: string;
+  func: (args: string) => Promise<string>;
+}
+
+export interface OpenAIResponse {
+  choices: Array<{
+    message: {
+      content: string;
+    };
+  }>;
+}
+
+interface Point {
+  x: number;
+  y: number;
+}
+
+export interface RectCoordinates {
+  topLeft: Point;
+  topRight: Point;
+  bottomLeft: Point;
+  bottomRight: Point;
+  center: Point;
+  width: number;
+  height: number;
+}
+
+export interface Viewport {
+  scrollX: number;
+  scrollY: number;
+  width: number;
+  height: number;
+}
+
+interface TextNode {
+  type: "TEXT_NODE";
+  text: string;
+  isVisible: boolean;
+}
+
+export interface ElementNode {
+  tagName: string | null;
+  attributes: Record<string, string>;
+  xpath: string | null;
+  children?: Array<ElementNode | TextNode | null>;
+  viewportCoordinates: RectCoordinates;
+  pageCoordinates: RectCoordinates;
+  viewport: Viewport;
+  isInteractive: boolean;
+  isVisible: boolean;
+  isTopElement: boolean;
+  highlightIndex: number;
+  shadowRoot: boolean;
+}
+
+export type DomTree = ElementNode;
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/package.json`:
+
+```json
+{
+  "name": "agentllm",
+  "module": "index.ts",
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "open": "^10.1.0",
+    "playwright": "^1.50.1"
+  }
+}
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/prompts/ActionRegistry.ts`:
+
+```ts
+import type { BrowserAgent } from "../tools/BrowserController";
+
+/**
+ * We define the interface for a "ToolAction" in your system:
+ *   name: the tool name the LLM uses (e.g. "clickElementByHighlightIndex")
+ *   description: short doc string for the LLM
+ *   handler(agent, args): the function to call with your agent instance + raw args
+ */
+interface ToolAction {
+  name: string;
+  description: string;
+  handler: (agent: BrowserAgent, args: string) => Promise<string>;
+}
+
+/**
+ * A central registry where we store all actions. The LLM can see them and call them by name.
+ */
+const actionRegistry = new Map<string, ToolAction>();
+
+/**
+ * Decorator that registers an instance method as a "tool" in the global registry.
+ * Each decorated method:
+ *   - Must be `async method(args: string): Promise<string>`
+ *   - Will appear in the registry under the given `name`
+ *   - The LLM calls it by returning JSON: {"tool": "<name>", "args": "..."}
+ */
+export function BrowserAction(name: string, description: string) {
+  return function (
+    target: any,
+    propertyKey: string,
+    descriptor: TypedPropertyDescriptor<(args: string) => Promise<string>>,
+  ) {
+    if (!descriptor.value) {
+      throw new Error(
+        "Decorator can only be applied to methods with a value()",
+      );
+    }
+
+    const methodImpl = descriptor.value;
+    actionRegistry.set(name, {
+      name,
+      description,
+      handler: async (agent: BrowserAgent, args: string) => {
+        // "this" is the agent instance at runtime
+        // We'll call the method using the agent as context:
+        return methodImpl.call(agent, args);
+      },
+    });
+  };
+}
+
+export function getRegisteredActions(): ToolAction[] {
+  return [...actionRegistry.values()];
+}
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/prompts/prompts.ts`:
+
+```ts
+import { getRegisteredActions } from "./ActionRegistry";
+
+export const systemPrompt = `
+You are a helpful assistant who can browse web pages using the following tools. 
+You do NOT receive the entire DOM by default. Instead, you can call specialized tools 
+to see which elements are clickable or to retrieve details about a specific element.
+
+**Important:**
+- When the user says a URL like "www.example.com" without "https://", interpret it as "https://www.example.com".
+- To open a page, call:
+  {"tool": "visitUrl", "args": "https://example.com"}
+- After visiting, you can list clickable elements by calling:
+  {"tool": "listClickableElements", "args": ""}
+- Then, if you want more info about a particular highlightIndex, you can call:
+  {"tool": "getElementDetails", "args": "5"}
+- If you want to click or fill an element, see the existing "clickElementByHighlightIndex" or "fillInputByHighlightIndex" tools, each requiring the highlightIndex.
+- args should be a string, even if it represents a number.
+
+**Tool-Calling Format**:
+Only output JSON when you want to use a tool. Example:
+{"tool": "visitUrl", "args": "https://www.example.com"}
+
+Otherwise, if you are providing a final answer, use plain text (no JSON).
+
+Below is the list of available tools (name + description):
+
+${getRegisteredActions()
+  .map((a) => `- ${a.name}: ${a.description}`)
+  .join("\n")}
+
+Remember:
+- You can call multiple tools in a row, seeing partial results each time. 
+- Stop calling tools once you are ready to provide your final answer in plain text.
+- When calling a tool ONLY output JSON, not plain text.
+- Use "visitUrl" first if you haven't visited a page yet.
+- Use "listClickableElements" to see highlight indexes. 
+- Use "getElementDetails" to get more info about an element.
+- Then possibly "clickElementByHighlightIndex" or "fillInputByHighlightIndex" to interact.
+`;
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/tsconfig.json`:
+
+```json
+{
+  "compilerOptions": {
+    // Enable latest features
+    "lib": ["ESNext", "DOM"],
+    "target": "ESNext",
+    "module": "ESNext",
+    "experimentalDecorators": true,
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "allowJs": true,
+
+    // Bundler mode
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+
+    // Best practices
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+
+    // Some stricter flags (disabled by default)
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noPropertyAccessFromIndexSignature": false
+  }
+}
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/index.ts`:
+
+```ts
+// index.ts
+import { getRegisteredActions } from "./prompts/ActionRegistry.ts";
+import { systemPrompt } from "./prompts/prompts.ts";
+import { BrowserAgent } from "./tools/BrowserController.ts";
+import type { Message, OpenAIChatRequest, OpenAIResponse } from "./types.ts";
+
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+if (!OPENAI_API_KEY) {
+  throw new Error(
+    "Missing OPENAI_API_KEY env variable. Please set it before running the script.",
+  );
+}
+
+/**
+ * Call the OpenAI Chat API with the given messages,
+ * returning [assistantText, headers].
+ */
+async function callOpenAI(messages: Message[]): Promise<[string, Headers]> {
+  const body: OpenAIChatRequest = {
+    model: "gpt-4o-mini", // or "gpt-4" or "gpt-3.5-turbo", etc.
+    messages,
+    temperature: 0.7,
+    max_tokens: 500,
+  };
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error("Error calling OpenAI API: " + errorText);
+  }
+
+  const data = (await response.json()) as OpenAIResponse;
+  const assistantText = data.choices[0].message.content;
+  return [assistantText, response.headers];
+}
+
+function parseToolInvocation(
+  message: string,
+): { tool: string; args: string } | null {
+  try {
+    const parsed = JSON.parse(message);
+    if (
+      parsed &&
+      typeof parsed.tool === "string" &&
+      typeof parsed.args === "string"
+    ) {
+      return { tool: parsed.tool, args: parsed.args };
+    }
+  } catch (err) {
+    console.error("Failed to parse JSON tool invocation:", err);
+  }
+  return null;
+}
+
+async function main() {
+  const userPrompt = process.argv.slice(2).join(" ");
+  if (!userPrompt) {
+    console.error("Usage: bun run index.ts  -- 'Your question or command'");
+    return;
+  }
+
+  const agent = new BrowserAgent();
+  await agent.init(false);
+
+  let messages: Message[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt },
+  ];
+
+  let stepCount = 0;
+  const maxSteps = 20;
+
+  while (true) {
+    stepCount++;
+    // await new Promise((resolve) => setTimeout(resolve, 5000));
+
+    const [response, headers] = await callOpenAI(messages);
+    console.log("\nLLM Agent response:\n", response);
+
+    const invocation = parseToolInvocation(response);
+    console.log("Parsed tool invocation:", invocation);
+
+    if (invocation) {
+      const toolDef = getRegisteredActions().find(
+        (t) => t.name === invocation.tool,
+      );
+
+      if (!toolDef) {
+        console.log(`\nUnknown tool: '${invocation.tool}'. No action found.\n`);
+        break;
+      }
+
+      console.log(
+        `Invoking tool '${invocation.tool}' with args: ${invocation.args}`,
+      );
+
+      let toolResult: string;
+      try {
+        toolResult = await toolDef.handler(agent, invocation.args);
+      } catch (e: any) {
+        toolResult = `Error: ${e.message}`;
+      }
+
+      const toolIsDomRepresentation =
+        invocation.tool === "getInteractiveDomRepresentation";
+
+      messages.push({ role: "assistant", content: response });
+      console.log("\nTool result:\n", toolResult);
+
+      messages.push({
+        role: "user",
+        content: toolResult,
+        isDomRepresentation: toolIsDomRepresentation ? true : undefined,
+      });
+    } else {
+      console.log("\nFINAL ANSWER:\n", response);
+      break;
+    }
+
+    if (stepCount >= maxSteps) {
+      console.warn(
+        `Reached max steps (${maxSteps}), stopping to prevent infinite loop.`,
+      );
+      break;
+    }
+  }
+
+  await agent.close();
+}
+
+main().catch((err) => console.error("Error in main:", err));
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/output.txt`:
+
+```txt
+Project Path: AgentLlm
+
+Source Tree:
+
+```
+AgentLlm
+├── tools
+│   ├── utils
+│   │   └── dom-representation.ts
+│   └── BrowserController.ts
+├── bun.lock
+├── README.md
+├── types.ts
+├── package.json
+├── prompts
+│   ├── ActionRegistry.ts
+│   └── prompts.ts
+├── tsconfig.json
+├── index.ts
+└── output.txt
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/tools/utils/dom-representation.ts`:
+
+```ts
+import type { ElementNode, RectCoordinates, Viewport } from "../../types";
+
+const getDomRepresentation = (args: {
+  doHighlightElements: boolean;
+  focusHighlightIndex: number;
+  viewportExpansion: number;
+}) => {
+  const { doHighlightElements, focusHighlightIndex, viewportExpansion } = args;
+  let highlightIndex = 0;
+
+  function highlightElement(
+    element: HTMLElement,
+    index: number,
+    parentIframe: HTMLIFrameElement | null = null,
+  ) {
+    let container = document.getElementById("playwright-highlight-container");
+
+    if (!container) {
+      container = document.createElement("div");
+      container.id = "playwright-highlight-container";
+      container.style.position = "absolute";
+      container.style.pointerEvents = "none";
+      container.style.top = "0";
+      container.style.left = "0";
+      container.style.width = "100%";
+      container.style.height = "100%";
+      container.style.zIndex = "2147483647"; // Maximum z-index value
+      document.body.appendChild(container);
+    }
+
+    // Generate a color based on the index
+    const colors = [
+      "#FF0000",
+      "#00FF00",
+      "#0000FF",
+      "#FFA500",
+      "#800080",
+      "#008080",
+      "#FF69B4",
+      "#4B0082",
+      "#FF4500",
+      "#2E8B57",
+      "#DC143C",
+      "#4682B4",
+    ];
+    const colorIndex = index % colors.length;
+    const baseColor = colors[colorIndex];
+    const backgroundColor = `${baseColor}1A`; // 10% opacity version of the color
+
+    // Create highlight overlay
+    const overlay = document.createElement("div");
+    overlay.style.position = "absolute";
+    overlay.style.border = `2px solid ${baseColor}`;
+    overlay.style.backgroundColor = backgroundColor;
+    overlay.style.pointerEvents = "none";
+    overlay.style.boxSizing = "border-box";
+
+    // Position overlay based on element, including scroll position
+    const rect = element.getBoundingClientRect();
+    let top = rect.top + window.scrollY;
+    let left = rect.left + window.scrollX;
+
+    // Adjust position if element is inside an iframe
+    if (parentIframe) {
+      const iframeRect = parentIframe.getBoundingClientRect();
+      top += iframeRect.top;
+      left += iframeRect.left;
+    }
+
+    overlay.style.top = `${top}px`;
+    overlay.style.left = `${left}px`;
+    overlay.style.width = `${rect.width}px`;
+    overlay.style.height = `${rect.height}px`;
+
+    // Create label
+    const label = document.createElement("div");
+    label.className = "playwright-highlight-label";
+    label.style.position = "absolute";
+    label.style.background = baseColor;
+    label.style.color = "white";
+    label.style.padding = "1px 4px";
+    label.style.borderRadius = "4px";
+    label.style.fontSize = `${Math.min(12, Math.max(8, rect.height / 2))}px`; // Responsive font size
+    label.textContent = index.toString();
+
+    const labelWidth = 20;
+    const labelHeight = 16;
+
+    // Default position (top-right corner inside the box)
+    let labelTop = top + 2;
+    let labelLeft = left + rect.width - labelWidth - 2;
+
+    // Adjust if box is too small
+    if (rect.width < labelWidth + 4 || rect.height < labelHeight + 4) {
+      // Position outside the box if it's too small
+      labelTop = top - labelHeight - 2;
+      labelLeft = left + rect.width - labelWidth;
+    }
+
+    label.style.top = `${labelTop}px`;
+    label.style.left = `${labelLeft}px`;
+
+    // Add to container
+    container.appendChild(overlay);
+    container.appendChild(label);
+
+    // Store reference for cleanup
+    element.setAttribute(
+      "browser-user-highlight-id",
+      `playwright-highlight-${index}`,
+    );
+
+    return index + 1;
+  }
+
+  // Helper function to generate XPath as a tree
+  function getXPathTree(element: HTMLElement, stopAtBoundary: boolean = true) {
+    const segments = [];
+    let currentElement = element;
+
+    while (currentElement && currentElement.nodeType === Node.ELEMENT_NODE) {
+      // Stop if we hit a shadow root or iframe
+      if (
+        stopAtBoundary &&
+        (currentElement.parentNode instanceof ShadowRoot ||
+          currentElement.parentNode instanceof HTMLIFrameElement)
+      ) {
+        break;
+      }
+
+      let index = 0;
+      let sibling = currentElement.previousSibling;
+      while (sibling) {
+        if (
+          sibling.nodeType === Node.ELEMENT_NODE &&
+          sibling.nodeName === currentElement.nodeName
+        ) {
+          index++;
+        }
+        sibling = sibling.previousSibling;
+      }
+
+      const tagName = currentElement.nodeName.toLowerCase();
+      const xpathIndex = index > 0 ? `[${index + 1}]` : "";
+      segments.unshift(`${tagName}${xpathIndex}`);
+
+      currentElement = currentElement.parentNode as HTMLElement;
+    }
+
+    return segments.join("/");
+  }
+
+  function isElementAccepted(element: Element) {
+    const leafElementDenyList = new Set([
+      "svg",
+      "script",
+      "style",
+      "link",
+      "meta",
+    ]);
+    return !leafElementDenyList.has(element.tagName.toLowerCase());
+  }
+
+  function isInteractiveElement(
+    element: HTMLElement | HTMLFormElement | HTMLInputElement,
+  ) {
+    if (element.tagName.toLowerCase() === "body") {
+      return false;
+    }
+
+    const interactiveElements = new Set([
+      "a",
+      "button",
+      "details",
+      "embed",
+      "input",
+      "label",
+      "menu",
+      "menuitem",
+      "object",
+      "select",
+      "textarea",
+      "summary",
+    ]);
+
+    const interactiveRoles = new Set([
+      "button",
+      "menu",
+      "menuitem",
+      "link",
+      "checkbox",
+      "radio",
+      "slider",
+      "tab",
+      "tabpanel",
+      "textbox",
+      "combobox",
+      "grid",
+      "listbox",
+      "option",
+      "progressbar",
+      "scrollbar",
+      "searchbox",
+      "switch",
+      "tree",
+      "treeitem",
+      "spinbutton",
+      "tooltip",
+      "a-button-inner",
+      "a-dropdown-button",
+      "click",
+      "menuitemcheckbox",
+      "menuitemradio",
+      "a-button-text",
+      "button-text",
+      "button-icon",
+      "button-icon-only",
+      "button-text-icon-only",
+      "dropdown",
+      "combobox",
+    ]);
+
+    const tagName = element.tagName.toLowerCase();
+    const role = element.getAttribute("role") ?? "";
+    const ariaRole = element.getAttribute("aria-role") ?? "";
+    const tabIndex = element.getAttribute("tabindex");
+
+    const hasAddressInputClass = element.classList.contains(
+      "address-input__container__input",
+    );
+
+    const hasInteractiveRole =
+      hasAddressInputClass ||
+      interactiveElements.has(tagName) ||
+      interactiveRoles.has(role) ||
+      interactiveRoles.has(ariaRole) ||
+      (tabIndex !== null &&
+        tabIndex !== "-1" &&
+        element.parentElement?.tagName.toLowerCase() !== "body") ||
+      element.getAttribute("data-action") === "a-dropdown-select" ||
+      element.getAttribute("data-action") === "a-dropdown-button";
+
+    if (hasInteractiveRole) {
+      return true;
+    }
+
+    const style = window.getComputedStyle(element);
+
+    const hasClickHandler =
+      element.onclick !== null ||
+      element.getAttribute("onclick") !== null ||
+      element.hasAttribute("ng-click") ||
+      element.hasAttribute("@click") ||
+      element.hasAttribute("v-on:click");
+
+    function getEventListeners(el: HTMLElement) {
+      try {
+        //@ts-ignore
+        return window.getEventListeners?.(el) || {};
+      } catch (e) {
+        const listeners: Record<
+          string,
+          { listener: string; useCapture: boolean }[]
+        > = {};
+
+        const eventTypes = [
+          "click",
+          "mousedown",
+          "mouseup",
+          "touchstart",
+          "touchend",
+          "keydown",
+          "keyup",
+          "focus",
+          "blur",
+        ];
+
+        for (const type of eventTypes) {
+          // const handler = el[`on${type}`];
+          const handler = el.getAttribute(`on${type}`);
+
+          if (handler) {
+            listeners[type] = [
+              {
+                listener: handler,
+                useCapture: false,
+              },
+            ];
+          }
+        }
+
+        return listeners;
+      }
+    }
+
+    const listeners = getEventListeners(element);
+
+    const hasClickListeners =
+      listeners &&
+      (listeners.click?.length > 0 ||
+        listeners.mousedown?.length > 0 ||
+        listeners.mouseup?.length > 0 ||
+        listeners.touchstart?.length > 0 ||
+        listeners.touchend?.length > 0);
+
+    const hasAriaProps =
+      element.hasAttribute("aria-expanded") ||
+      element.hasAttribute("aria-pressed") ||
+      element.hasAttribute("aria-selected") ||
+      element.hasAttribute("aria-checked");
+
+    const isDraggable =
+      element.draggable || element.getAttribute("draggable") === "true";
+
+    if (
+      element.tagName.toLowerCase() === "body" ||
+      element.parentElement?.tagName.toLowerCase() === "body"
+    ) {
+      return false;
+    }
+
+    return hasAriaProps || hasClickHandler || hasClickListeners || isDraggable;
+  }
+
+  function isElementVisible(element: HTMLElement) {
+    const style = window.getComputedStyle(element);
+    return (
+      element.offsetWidth > 0 &&
+      element.offsetHeight > 0 &&
+      style.visibility !== "hidden" &&
+      style.display !== "none"
+    );
+  }
+
+  function isTopElement(element: HTMLElement) {
+    let doc = element.ownerDocument;
+
+    if (doc !== window.document) {
+      return true;
+    }
+
+    const shadowRoot = element.getRootNode();
+
+    if (shadowRoot instanceof ShadowRoot) {
+      const rect = element.getBoundingClientRect();
+      const point = {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+      };
+
+      try {
+        const topEl = shadowRoot.elementFromPoint(point.x, point.y);
+        if (!topEl) return false;
+
+        let current = topEl;
+
+        while (current) {
+          if (current === element) return true;
+          current = current.parentElement as HTMLElement;
+        }
+        return false;
+      } catch (e) {
+        return true;
+      }
+    }
+
+    const rect = element.getBoundingClientRect();
+
+    if (viewportExpansion === -1) {
+      return true;
+    }
+
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+    const viewportTop = -viewportExpansion + scrollY;
+    const viewportLeft = -viewportExpansion + scrollX;
+    const viewportBottom = window.innerHeight + viewportExpansion + scrollY;
+    const viewportRight = window.innerWidth + viewportExpansion + scrollX;
+
+    const absTop = rect.top + scrollY;
+    const absLeft = rect.left + scrollX;
+    const absBottom = rect.bottom + scrollY;
+    const absRight = rect.right + scrollX;
+
+    if (
+      absBottom < viewportTop ||
+      absTop > viewportBottom ||
+      absRight < viewportLeft ||
+      absLeft > viewportRight
+    ) {
+      return false;
+    }
+
+    try {
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+
+      const point = {
+        x: centerX,
+        y: centerY,
+      };
+
+      if (
+        point.x < 0 ||
+        point.x >= window.innerWidth ||
+        point.y < 0 ||
+        point.y >= window.innerHeight
+      ) {
+        return true;
+      }
+
+      const topEl = document.elementFromPoint(point.x, point.y);
+      if (!topEl) return false;
+
+      let current = topEl;
+      while (current && current !== document.documentElement) {
+        if (current === element) return true;
+        current = current.parentElement as HTMLElement;
+      }
+      return false;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  function isTextNodeVisible(textNode: Text) {
+    const range = document.createRange();
+    range.selectNodeContents(textNode);
+    const rect = range.getBoundingClientRect();
+
+    return (
+      rect.width !== 0 &&
+      rect.height !== 0 &&
+      rect.top >= 0 &&
+      rect.top <= window.innerHeight &&
+      textNode.parentElement?.checkVisibility({
+        checkOpacity: true,
+        checkVisibilityCSS: true,
+      })
+    );
+  }
+
+  function buildDomTree(
+    node: Element | Text,
+    parentIframe: HTMLIFrameElement | null = null,
+  ) {
+    if (!node) {
+      return null;
+    }
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      const textContent = node.textContent?.trim();
+      if (textContent && isTextNodeVisible(node as Text)) {
+        return {
+          type: "TEXT_NODE",
+          text: textContent,
+          isVisible: true,
+        };
+      }
+      return null;
+    }
+
+    if (
+      node.nodeType === Node.ELEMENT_NODE &&
+      !isElementAccepted(node as Element)
+    ) {
+      return null;
+    }
+
+    const nodeData: ElementNode = {
+      tagName: (node as Element).tagName
+        ? (node as Element).tagName.toLowerCase()
+        : null,
+      attributes: {},
+      xpath:
+        node.nodeType === Node.ELEMENT_NODE
+          ? getXPathTree(node as HTMLElement, true)
+          : null,
+      children: [],
+      viewportCoordinates: {} as RectCoordinates,
+      pageCoordinates: {} as RectCoordinates,
+      viewport: {} as Viewport,
+      isInteractive: false,
+      isVisible: false,
+      isTopElement: false,
+      highlightIndex: -1,
+      shadowRoot: false,
+    };
+
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const rect = (node as Element).getBoundingClientRect();
+      const scrollX = window.scrollX;
+      const scrollY = window.scrollY;
+
+      nodeData.viewportCoordinates = {
+        topLeft: {
+          x: Math.round(rect.left),
+          y: Math.round(rect.top),
+        },
+        topRight: {
+          x: Math.round(rect.right),
+          y: Math.round(rect.top),
+        },
+        bottomLeft: {
+          x: Math.round(rect.left),
+          y: Math.round(rect.bottom),
+        },
+        bottomRight: {
+          x: Math.round(rect.right),
+          y: Math.round(rect.bottom),
+        },
+        center: {
+          x: Math.round(rect.left + rect.width / 2),
+          y: Math.round(rect.top + rect.height / 2),
+        },
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+
+      nodeData.pageCoordinates = {
+        topLeft: {
+          x: Math.round(rect.left + scrollX),
+          y: Math.round(rect.top + scrollY),
+        },
+        topRight: {
+          x: Math.round(rect.right + scrollX),
+          y: Math.round(rect.top + scrollY),
+        },
+        bottomLeft: {
+          x: Math.round(rect.left + scrollX),
+          y: Math.round(rect.bottom + scrollY),
+        },
+        bottomRight: {
+          x: Math.round(rect.right + scrollX),
+          y: Math.round(rect.bottom + scrollY),
+        },
+        center: {
+          x: Math.round(rect.left + rect.width / 2 + scrollX),
+          y: Math.round(rect.top + rect.height / 2 + scrollY),
+        },
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+
+      nodeData.viewport = {
+        scrollX: Math.round(scrollX),
+        scrollY: Math.round(scrollY),
+        width: window.innerWidth,
+        height: window.innerHeight,
+      };
+    }
+
+    if (node.nodeType === Node.ELEMENT_NODE && (node as Element).attributes) {
+      const attributeNames = (node as Element).getAttributeNames?.() || [];
+      for (const name of attributeNames) {
+        //@ts-ignore
+        nodeData.attributes[name] = node.getAttribute(name);
+      }
+    }
+
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const isInteractive = isInteractiveElement(node as HTMLElement);
+      const isVisible = isElementVisible(node as HTMLElement);
+      const isTop = isTopElement(node as HTMLElement);
+
+      nodeData.isInteractive = isInteractive;
+      nodeData.isVisible = isVisible;
+      nodeData.isTopElement = isTop;
+
+      if (isInteractive && isVisible && isTop) {
+        nodeData.highlightIndex = highlightIndex++;
+        if (doHighlightElements) {
+          if (focusHighlightIndex >= 0) {
+            if (focusHighlightIndex === nodeData.highlightIndex) {
+              highlightElement(
+                node as HTMLElement,
+                nodeData.highlightIndex,
+                parentIframe,
+              );
+            }
+          } else {
+            highlightElement(
+              node as HTMLElement,
+              nodeData.highlightIndex,
+              parentIframe,
+            );
+          }
+        }
+      }
+    }
+
+    if ((node as Element).shadowRoot) {
+      nodeData.shadowRoot = true;
+    }
+
+    // Handle shadow DOM
+    if ((node as Element).shadowRoot) {
+      const shadowChildren = Array.from(
+        (node as Element).shadowRoot!.childNodes,
+      ).map((child) => buildDomTree(child as Element, parentIframe));
+      // @ts-ignore
+      nodeData.children.push(...shadowChildren);
+    }
+
+    // Handle iframes
+    if ((node as Element).tagName === "IFRAME") {
+      try {
+        const iframeDoc =
+          (node as HTMLIFrameElement).contentDocument ||
+          (node as HTMLIFrameElement).contentWindow?.document;
+
+        if (iframeDoc) {
+          const iframeChildren = Array.from(iframeDoc.body.childNodes).map(
+            (child) =>
+              buildDomTree(child as Element, node as HTMLIFrameElement),
+          );
+          //@ts-ignore
+          nodeData.children.push(...iframeChildren);
+        }
+      } catch (e) {
+        console.warn("Unable to access iframe:", node);
+      }
+    } else {
+      const children = Array.from(node.childNodes).map((child) =>
+        buildDomTree(child as Element, parentIframe),
+      );
+      //@ts-ignore
+      nodeData.children.push(...children);
+    }
+
+    return nodeData;
+  }
+
+  return buildDomTree(document.body);
+};
+
+export default getDomRepresentation;
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/tools/BrowserController.ts`:
+
+```ts
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type Page,
+} from "playwright";
+import getDomRepresentation from "./utils/dom-representation";
+import type { DomTree } from "../types";
+import { BrowserAction } from "../prompts/ActionRegistry";
+
+export class BrowserAgent {
+  private browser: Browser | null = null;
+  private context: BrowserContext | null = null;
+  private page: Page | null = null;
+  private domSnapshot: DomTree | null = null;
+
+  public async init(headless: boolean = false): Promise<void> {
+    this.browser = await chromium.launch({ headless });
+    this.context = await this.browser.newContext({ ignoreHTTPSErrors: true });
+    this.page = await this.context.newPage();
+  }
+
+  public async close(): Promise<void> {
+    if (this.browser) {
+      await this.browser.close();
+    }
+    this.browser = null;
+    this.context = null;
+    this.page = null;
+    this.domSnapshot = null;
+  }
+
+  private async goto(url: string): Promise<void> {
+    if (!this.page) throw new Error("No Page found. Did you call init()?");
+    await this.page.goto(url, { waitUntil: "networkidle" });
+  }
+
+  private async updateDomRepresentation(
+    doHighlightElements = false,
+    focusHighlightIndex = -1,
+    viewportExpansion = 0,
+  ): Promise<DomTree> {
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
+
+    const dom = (await this.page.evaluate(getDomRepresentation, {
+      doHighlightElements,
+      focusHighlightIndex,
+      viewportExpansion,
+    })) as DomTree;
+
+    this.domSnapshot = dom;
+
+    return dom;
+  }
+
+  @BrowserAction(
+    "visitUrl",
+    "Navigate to a specified URL and store the updated DOM internally.",
+  )
+  public async visitUrl(args: string): Promise<string> {
+    const url = args.trim().startsWith("http")
+      ? args.trim()
+      : "https://" + args.trim();
+    await this.goto(url);
+    await this.updateDomRepresentation(true, -1, 0);
+    return `Visited URL: ${url} and updated DOM snapshot.`;
+  }
+
+  @BrowserAction(
+    "listClickableElements",
+    "Returns a JSON array of { highlightIndex, snippet } for clickable elements.",
+  )
+  public async listClickableElements(_args: string): Promise<string> {
+    if (!this.domSnapshot) {
+      return "No DOM snapshot available. Use visitUrl first.";
+    }
+
+    const clickable: Array<{ highlightIndex: number; snippet: string }> = [];
+
+    const walk = (node: any) => {
+      if (!node) return;
+      if (node.isInteractive && node.highlightIndex >= 0) {
+        clickable.push({
+          highlightIndex: node.highlightIndex,
+          snippet: this.getShortText(node),
+        });
+      }
+      if (node.children) {
+        for (const child of node.children) {
+          if (child && typeof child === "object" && "tagName" in child) {
+            walk(child);
+          }
+        }
+      }
+    };
+    walk(this.domSnapshot);
+
+    return JSON.stringify(clickable, null, 2);
+  }
+
+  @BrowserAction(
+    "getElementDetails",
+    "Provide detail about a single element by highlightIndex.",
+  )
+  public async getElementDetails(args: string): Promise<string> {
+    if (!this.domSnapshot)
+      return "No DOM snapshot available. Use visitUrl first.";
+    const index = parseInt(args.trim(), 10);
+    if (isNaN(index)) return `Could not parse highlightIndex from "${args}".`;
+    let found: any = null;
+
+    const walk = (node: any) => {
+      if (!node) return;
+      if (node.highlightIndex === index) found = node;
+      if (node.children && !found) {
+        for (const c of node.children) {
+          if (c && typeof c === "object" && "tagName" in c) {
+            walk(c);
+            if (found) break;
+          }
+        }
+      }
+    };
+    walk(this.domSnapshot);
+    if (!found) return `No element found with highlightIndex = ${index}`;
+
+    const detail = {
+      tagName: found.tagName,
+      attributes: found.attributes,
+      isVisible: found.isVisible,
+      isTopElement: found.isTopElement,
+      textNearby: this.getAllText(found).slice(0, 300),
+    };
+    return JSON.stringify(detail, null, 2);
+  }
+
+  @BrowserAction(
+    "clickElementByHighlightIndex",
+    "Clicks on an element by its highlightIndex in the current DOM",
+  )
+  public async clickElementByHighlightIndex(args: string): Promise<string> {
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
+
+    const highlightIndex = parseInt(args, 10);
+
+    if (isNaN(highlightIndex)) {
+      return `Could not parse highlightIndex from "${args}". Must be a number.`;
+    }
+
+    const selector = `[browser-user-highlight-id="playwright-highlight-${highlightIndex}"]`;
+
+    const elementHandle = await this.page.$(selector);
+
+    if (!elementHandle) {
+      return `Error: No element found with highlightIndex = ${highlightIndex}`;
+    }
+
+    await elementHandle.click();
+
+    await this.page.waitForLoadState("networkidle");
+
+    await this.updateDomRepresentation(true, -1, 0);
+
+    return `Clicked element with highlightIndex = ${highlightIndex}.`;
+  }
+
+  @BrowserAction(
+    "fillInputByHighlightIndex",
+    'Fills an input at "highlightIndex" with text. Format: "<index>||<text>"',
+  )
+  public async fillInputByHighlightIndex(args: string): Promise<string> {
+    if (!this.page) throw new Error("No Page found. Did you call init()?");
+    const [indexStr, ...rest] = args.split("||");
+    const highlightIndex = parseInt(indexStr.trim(), 10);
+    const text = rest.join("||").trim();
+    if (isNaN(highlightIndex)) {
+      return `Could not parse highlightIndex from "${indexStr}". Use "5||Hello world" syntax.`;
+    }
+    if (!text) {
+      return `No text provided. Use "5||Hello world."`;
+    }
+    const selector = `[browser-user-highlight-id="playwright-highlight-${highlightIndex}"]`;
+    const elementHandle = await this.page.$(selector);
+    if (!elementHandle)
+      return `Error: No element found for highlightIndex ${highlightIndex}`;
+    await elementHandle.fill(text);
+    await this.updateDomRepresentation();
+    return `Filled element at highlightIndex ${highlightIndex} with "${text}"`;
+  }
+
+  @BrowserAction("closeBrowser", "Closes the current browser session")
+  public async closeBrowser(_args: string): Promise<string> {
+    await this.close();
+    return "Browser closed successfully.";
+  }
+
+  public getDomSnapshot(): DomTree | null {
+    return this.domSnapshot;
+  }
+
+  private getShortText(node: any): string {
+    const texts: string[] = [];
+    if (node.attributes?.["aria-label"])
+      texts.push(node.attributes["aria-label"]);
+    if (node.attributes?.title) texts.push(node.attributes.title);
+    if (node.children) {
+      for (const c of node.children) {
+        if (c && c.type === "TEXT_NODE" && c.text?.trim()) {
+          texts.push(c.text.trim());
+        }
+      }
+    }
+    const text = texts.join(" ").trim() || node.tagName || "unknown";
+    return text.slice(0, 60);
+  }
+
+  private getAllText(node: any): string {
+    let text = "";
+    const dfs = (n: any) => {
+      if (!n) return;
+      if (n.children) {
+        for (const c of n.children) {
+          if (c && c.type === "TEXT_NODE" && c.text) {
+            text += c.text + " ";
+          } else if (c && typeof c === "object" && "tagName" in c) {
+            dfs(c);
+          }
+        }
+      }
+    };
+    dfs(node);
+    return text.trim();
+  }
+}
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/bun.lock`:
+
+```lock
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "agentllm",
+      "dependencies": {
+        "open": "^10.1.0",
+        "playwright": "^1.50.1",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+      },
+      "peerDependencies": {
+        "typescript": "^5.0.0",
+      },
+    },
+  },
+  "packages": {
+    "@types/bun": ["@types/bun@1.2.2", "", { "dependencies": { "bun-types": "1.2.2" } }, "sha512-tr74gdku+AEDN5ergNiBnplr7hpDp3V1h7fqI2GcR/rsUaM39jpSeKH0TFibRvU0KwniRx5POgaYnaXbk0hU+w=="],
+
+    "@types/node": ["@types/node@22.13.2", "", { "dependencies": { "undici-types": "~6.20.0" } }, "sha512-Z+r8y3XL9ZpI2EY52YYygAFmo2/oWfNSj4BCpAXE2McAexDk8VcnBMGC9Djn9gTKt4d2T/hhXqmPzo4hfIXtTg=="],
+
+    "@types/ws": ["@types/ws@8.5.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-bd/YFLW+URhBzMXurx7lWByOu+xzU9+kb3RboOteXYDfW+tr+JZa99OyNmPINEGB/ahzKrEuc8rcv4gnpJmxTw=="],
+
+    "bun-types": ["bun-types@1.2.2", "", { "dependencies": { "@types/node": "*", "@types/ws": "~8.5.10" } }, "sha512-RCbMH5elr9gjgDGDhkTTugA21XtJAy/9jkKe/G3WR2q17VPGhcquf9Sir6uay9iW+7P/BV0CAHA1XlHXMAVKHg=="],
+
+    "bundle-name": ["bundle-name@4.1.0", "", { "dependencies": { "run-applescript": "^7.0.0" } }, "sha512-tjwM5exMg6BGRI+kNmTntNsvdZS1X8BFYS6tnJ2hdH0kVxM6/eVZ2xy+FqStSWvYmtfFMDLIxurorHwDKfDz5Q=="],
+
+    "default-browser": ["default-browser@5.2.1", "", { "dependencies": { "bundle-name": "^4.1.0", "default-browser-id": "^5.0.0" } }, "sha512-WY/3TUME0x3KPYdRRxEJJvXRHV4PyPoUsxtZa78lwItwRQRHhd2U9xOscaT/YTf8uCXIAjeJOFBVEh/7FtD8Xg=="],
+
+    "default-browser-id": ["default-browser-id@5.0.0", "", {}, "sha512-A6p/pu/6fyBcA1TRz/GqWYPViplrftcW2gZC9q79ngNCKAeR/X3gcEdXQHl4KNXV+3wgIJ1CPkJQ3IHM6lcsyA=="],
+
+    "define-lazy-prop": ["define-lazy-prop@3.0.0", "", {}, "sha512-N+MeXYoqr3pOgn8xfyRPREN7gHakLYjhsHhWGT3fWAiL4IkAt0iDw14QiiEm2bE30c5XX5q0FtAA3CK5f9/BUg=="],
+
+    "fsevents": ["fsevents@2.3.2", "", { "os": "darwin" }, "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA=="],
+
+    "is-docker": ["is-docker@3.0.0", "", { "bin": { "is-docker": "cli.js" } }, "sha512-eljcgEDlEns/7AXFosB5K/2nCM4P7FQPkGc/DWLy5rmFEWvZayGrik1d9/QIY5nJ4f9YsVvBkA6kJpHn9rISdQ=="],
+
+    "is-inside-container": ["is-inside-container@1.0.0", "", { "dependencies": { "is-docker": "^3.0.0" }, "bin": { "is-inside-container": "cli.js" } }, "sha512-KIYLCCJghfHZxqjYBE7rEy0OBuTd5xCHS7tHVgvCLkx7StIoaxwNW3hCALgEUjFfeRk+MG/Qxmp/vtETEF3tRA=="],
+
+    "is-wsl": ["is-wsl@3.1.0", "", { "dependencies": { "is-inside-container": "^1.0.0" } }, "sha512-UcVfVfaK4Sc4m7X3dUSoHoozQGBEFeDC+zVo06t98xe8CzHSZZBekNXH+tu0NalHolcJ/QAGqS46Hef7QXBIMw=="],
+
+    "open": ["open@10.1.0", "", { "dependencies": { "default-browser": "^5.2.1", "define-lazy-prop": "^3.0.0", "is-inside-container": "^1.0.0", "is-wsl": "^3.1.0" } }, "sha512-mnkeQ1qP5Ue2wd+aivTD3NHd/lZ96Lu0jgf0pwktLPtx6cTZiH7tyeGRRHs0zX0rbrahXPnXlUnbeXyaBBuIaw=="],
+
+    "playwright": ["playwright@1.50.1", "", { "dependencies": { "playwright-core": "1.50.1" }, "optionalDependencies": { "fsevents": "2.3.2" }, "bin": { "playwright": "cli.js" } }, "sha512-G8rwsOQJ63XG6BbKj2w5rHeavFjy5zynBA9zsJMMtBoe/Uf757oG12NXz6e6OirF7RCrTVAKFXbLmn1RbL7Qaw=="],
+
+    "playwright-core": ["playwright-core@1.50.1", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-ra9fsNWayuYumt+NiM069M6OkcRb1FZSK8bgi66AtpFoWkg2+y0bJSNmkFrWhMbEBbVKC/EruAHH3g0zmtwGmQ=="],
+
+    "run-applescript": ["run-applescript@7.0.0", "", {}, "sha512-9by4Ij99JUr/MCFBUkDKLWK3G9HVXmabKz9U5MlIAIuvuzkiOicRYs8XJLxX+xahD+mLiiCYDqF9dKAgtzKP1A=="],
+
+    "typescript": ["typescript@5.7.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-84MVSjMEHP+FQRPy3pX9sTVV/INIex71s9TL2Gm5FG/WG1SqXeKyZ0k7/blY/4FdOzI12CBy1vGc4og/eus0fw=="],
+
+    "undici-types": ["undici-types@6.20.0", "", {}, "sha512-Ny6QZ2Nju20vw1SRHe3d9jVu6gJ+4e3+MMpqu7pqE5HT6WsTSlce++GQmK5UXS8mzV8DSYHrQH+Xrf2jVcuKNg=="],
+  }
+}
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/README.md`:
+
+```md
+# agentllm
+
+To install dependencies:
+
+```bash
+bun install
+```
+
+To run:
+
+```bash
+bun run index.ts
+```
+
+This project was created using `bun init` in bun v1.2.2. [Bun](https://bun.sh) is a fast all-in-one JavaScript runtime.
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/types.ts`:
+
+```ts
+export type Message = {
+  role: "system" | "user" | "assistant";
+  content: string;
+  isDomRepresentation?: boolean;
+};
+
+export interface OpenAIChatRequest {
+  model: string;
+  messages: Message[];
+  temperature?: number;
+  max_tokens?: number;
+}
+
+export interface Tool {
+  name: string;
+  description: string;
+  func: (args: string) => Promise<string>;
+}
+
+export interface OpenAIResponse {
+  choices: Array<{
+    message: {
+      content: string;
+    };
+  }>;
+}
+
+interface Point {
+  x: number;
+  y: number;
+}
+
+export interface RectCoordinates {
+  topLeft: Point;
+  topRight: Point;
+  bottomLeft: Point;
+  bottomRight: Point;
+  center: Point;
+  width: number;
+  height: number;
+}
+
+export interface Viewport {
+  scrollX: number;
+  scrollY: number;
+  width: number;
+  height: number;
+}
+
+interface TextNode {
+  type: "TEXT_NODE";
+  text: string;
+  isVisible: boolean;
+}
+
+export interface ElementNode {
+  tagName: string | null;
+  attributes: Record<string, string>;
+  xpath: string | null;
+  children?: Array<ElementNode | TextNode | null>;
+  viewportCoordinates: RectCoordinates;
+  pageCoordinates: RectCoordinates;
+  viewport: Viewport;
+  isInteractive: boolean;
+  isVisible: boolean;
+  isTopElement: boolean;
+  highlightIndex: number;
+  shadowRoot: boolean;
+}
+
+export type DomTree = ElementNode;
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/package.json`:
+
+```json
+{
+  "name": "agentllm",
+  "module": "index.ts",
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "open": "^10.1.0",
+    "playwright": "^1.50.1"
+  }
+}
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/prompts/ActionRegistry.ts`:
+
+```ts
+import type { BrowserAgent } from "../tools/BrowserController";
+
+/**
+ * We define the interface for a "ToolAction" in your system:
+ *   name: the tool name the LLM uses (e.g. "clickElementByHighlightIndex")
+ *   description: short doc string for the LLM
+ *   handler(agent, args): the function to call with your agent instance + raw args
+ */
+interface ToolAction {
+  name: string;
+  description: string;
+  handler: (agent: BrowserAgent, args: string) => Promise<string>;
+}
+
+/**
+ * A central registry where we store all actions. The LLM can see them and call them by name.
+ */
+const actionRegistry = new Map<string, ToolAction>();
+
+/**
+ * Decorator that registers an instance method as a "tool" in the global registry.
+ * Each decorated method:
+ *   - Must be `async method(args: string): Promise<string>`
+ *   - Will appear in the registry under the given `name`
+ *   - The LLM calls it by returning JSON: {"tool": "<name>", "args": "..."}
+ */
+export function BrowserAction(name: string, description: string) {
+  return function (
+    target: any,
+    propertyKey: string,
+    descriptor: TypedPropertyDescriptor<(args: string) => Promise<string>>,
+  ) {
+    if (!descriptor.value) {
+      throw new Error(
+        "Decorator can only be applied to methods with a value()",
+      );
+    }
+
+    const methodImpl = descriptor.value;
+    actionRegistry.set(name, {
+      name,
+      description,
+      handler: async (agent: BrowserAgent, args: string) => {
+        // "this" is the agent instance at runtime
+        // We'll call the method using the agent as context:
+        return methodImpl.call(agent, args);
+      },
+    });
+  };
+}
+
+export function getRegisteredActions(): ToolAction[] {
+  return [...actionRegistry.values()];
+}
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/prompts/prompts.ts`:
+
+```ts
+import { getRegisteredActions } from "./ActionRegistry";
+
+export const systemPrompt = `
+You are a helpful assistant who can browse web pages using the following tools. 
+You do NOT receive the entire DOM by default. Instead, you can call specialized tools 
+to see which elements are clickable or to retrieve details about a specific element.
+
+**Important:**
+- When the user says a URL like "www.example.com" without "https://", interpret it as "https://www.example.com".
+- To open a page, call:
+  {"tool": "visitUrl", "args": "https://example.com"}
+- After visiting, you can list clickable elements by calling:
+  {"tool": "listClickableElements", "args": ""}
+- Then, if you want more info about a particular highlightIndex, you can call:
+  {"tool": "getElementDetails", "args": "5"}
+- If you want to click or fill an element, see the existing "clickElementByHighlightIndex" or "fillInputByHighlightIndex" tools, each requiring the highlightIndex.
+- args should be a string, even if it represents a number.
+
+**Tool-Calling Format**:
+Only output JSON when you want to use a tool. Example:
+{"tool": "visitUrl", "args": "https://www.example.com"}
+
+Otherwise, if you are providing a final answer, use plain text (no JSON).
+
+Below is the list of available tools (name + description):
+
+${getRegisteredActions()
+  .map((a) => `- ${a.name}: ${a.description}`)
+  .join("\n")}
+
+Remember:
+- You can call multiple tools in a row, seeing partial results each time. 
+- Stop calling tools once you are ready to provide your final answer in plain text.
+- Use "visitUrl" first if you haven't visited a page yet.
+- Use "listClickableElements" to see highlight indexes. 
+- Use "getElementDetails" to get more info about an element.
+- Then possibly "clickElementByHighlightIndex" or "fillInputByHighlightIndex" to interact.
+`;
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/tsconfig.json`:
+
+```json
+{
+  "compilerOptions": {
+    // Enable latest features
+    "lib": ["ESNext", "DOM"],
+    "target": "ESNext",
+    "module": "ESNext",
+    "experimentalDecorators": true,
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "allowJs": true,
+
+    // Bundler mode
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+
+    // Best practices
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+
+    // Some stricter flags (disabled by default)
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noPropertyAccessFromIndexSignature": false
+  }
+}
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/index.ts`:
+
+```ts
+// index.ts
+import { getRegisteredActions } from "./prompts/ActionRegistry.ts";
+import { systemPrompt } from "./prompts/prompts.ts";
+import { BrowserAgent } from "./tools/BrowserController.ts";
+import type { Message, OpenAIChatRequest, OpenAIResponse } from "./types.ts";
+
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+if (!OPENAI_API_KEY) {
+  throw new Error(
+    "Missing OPENAI_API_KEY env variable. Please set it before running the script.",
+  );
+}
+
+/**
+ * Call the OpenAI Chat API with the given messages,
+ * returning [assistantText, headers].
+ */
+async function callOpenAI(messages: Message[]): Promise<[string, Headers]> {
+  const body: OpenAIChatRequest = {
+    model: "gpt-4o-mini", // or "gpt-4" or "gpt-3.5-turbo", etc.
+    messages,
+    temperature: 0.7,
+    max_tokens: 500,
+  };
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error("Error calling OpenAI API: " + errorText);
+  }
+
+  const data = (await response.json()) as OpenAIResponse;
+  const assistantText = data.choices[0].message.content;
+  return [assistantText, response.headers];
+}
+
+function parseToolInvocation(
+  message: string,
+): { tool: string; args: string } | null {
+  try {
+    const parsed = JSON.parse(message);
+    if (
+      parsed &&
+      typeof parsed.tool === "string" &&
+      typeof parsed.args === "string"
+    ) {
+      return { tool: parsed.tool, args: parsed.args };
+    }
+  } catch (err) {
+    console.error("Failed to parse JSON tool invocation:", err);
+  }
+  return null;
+}
+
+async function main() {
+  const userPrompt = process.argv.slice(2).join(" ");
+  if (!userPrompt) {
+    console.error("Usage: bun run index.ts  -- 'Your question or command'");
+    return;
+  }
+
+  const agent = new BrowserAgent();
+  await agent.init(false);
+
+  let messages: Message[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt },
+  ];
+
+  let stepCount = 0;
+  const maxSteps = 20;
+
+  while (true) {
+    stepCount++;
+    // await new Promise((resolve) => setTimeout(resolve, 5000));
+
+    const [response, headers] = await callOpenAI(messages);
+    console.log("\nLLM Agent response:\n", response);
+
+    const invocation = parseToolInvocation(response);
+    console.log("Parsed tool invocation:", invocation);
+
+    if (invocation) {
+      const toolDef = getRegisteredActions().find(
+        (t) => t.name === invocation.tool,
+      );
+
+      if (!toolDef) {
+        console.log(`\nUnknown tool: '${invocation.tool}'. No action found.\n`);
+        break;
+      }
+
+      console.log(
+        `Invoking tool '${invocation.tool}' with args: ${invocation.args}`,
+      );
+
+      let toolResult: string;
+      try {
+        toolResult = await toolDef.handler(agent, invocation.args);
+      } catch (e: any) {
+        toolResult = `Error: ${e.message}`;
+      }
+
+      const toolIsDomRepresentation =
+        invocation.tool === "getInteractiveDomRepresentation";
+
+      messages.push({ role: "assistant", content: response });
+      console.log("\nTool result:\n", toolResult);
+
+      messages.push({
+        role: "user",
+        content: toolResult,
+        isDomRepresentation: toolIsDomRepresentation ? true : undefined,
+      });
+    } else {
+      console.log("\nFINAL ANSWER:\n", response);
+      break;
+    }
+
+    if (stepCount >= maxSteps) {
+      console.warn(
+        `Reached max steps (${maxSteps}), stopping to prevent infinite loop.`,
+      );
+      break;
+    }
+  }
+
+  await agent.close();
+}
+
+main().catch((err) => console.error("Error in main:", err));
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/output.txt`:
+
+```txt
+Project Path: AgentLlm
+
+Source Tree:
+
+```
+AgentLlm
+├── tools
+│   ├── utils
+│   │   └── dom-representation.ts
+│   └── BrowserController.ts
+├── bun.lock
+├── README.md
+├── types.ts
+├── package.json
+├── prompts
+│   ├── ActionRegistry.ts
+│   └── prompts.ts
+├── tsconfig.json
+├── index.ts
+└── output.txt
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/tools/utils/dom-representation.ts`:
+
+```ts
+import type { ElementNode, RectCoordinates, Viewport } from "../../types";
+
+const getDomRepresentation = (args: {
+  doHighlightElements: boolean;
+  focusHighlightIndex: number;
+  viewportExpansion: number;
+}) => {
+  const { doHighlightElements, focusHighlightIndex, viewportExpansion } = args;
+  let highlightIndex = 0;
+
+  function highlightElement(
+    element: HTMLElement,
+    index: number,
+    parentIframe: HTMLIFrameElement | null = null,
+  ) {
+    let container = document.getElementById("playwright-highlight-container");
+
+    if (!container) {
+      container = document.createElement("div");
+      container.id = "playwright-highlight-container";
+      container.style.position = "absolute";
+      container.style.pointerEvents = "none";
+      container.style.top = "0";
+      container.style.left = "0";
+      container.style.width = "100%";
+      container.style.height = "100%";
+      container.style.zIndex = "2147483647"; // Maximum z-index value
+      document.body.appendChild(container);
+    }
+
+    // Generate a color based on the index
+    const colors = [
+      "#FF0000",
+      "#00FF00",
+      "#0000FF",
+      "#FFA500",
+      "#800080",
+      "#008080",
+      "#FF69B4",
+      "#4B0082",
+      "#FF4500",
+      "#2E8B57",
+      "#DC143C",
+      "#4682B4",
+    ];
+    const colorIndex = index % colors.length;
+    const baseColor = colors[colorIndex];
+    const backgroundColor = `${baseColor}1A`; // 10% opacity version of the color
+
+    // Create highlight overlay
+    const overlay = document.createElement("div");
+    overlay.style.position = "absolute";
+    overlay.style.border = `2px solid ${baseColor}`;
+    overlay.style.backgroundColor = backgroundColor;
+    overlay.style.pointerEvents = "none";
+    overlay.style.boxSizing = "border-box";
+
+    // Position overlay based on element, including scroll position
+    const rect = element.getBoundingClientRect();
+    let top = rect.top + window.scrollY;
+    let left = rect.left + window.scrollX;
+
+    // Adjust position if element is inside an iframe
+    if (parentIframe) {
+      const iframeRect = parentIframe.getBoundingClientRect();
+      top += iframeRect.top;
+      left += iframeRect.left;
+    }
+
+    overlay.style.top = `${top}px`;
+    overlay.style.left = `${left}px`;
+    overlay.style.width = `${rect.width}px`;
+    overlay.style.height = `${rect.height}px`;
+
+    // Create label
+    const label = document.createElement("div");
+    label.className = "playwright-highlight-label";
+    label.style.position = "absolute";
+    label.style.background = baseColor;
+    label.style.color = "white";
+    label.style.padding = "1px 4px";
+    label.style.borderRadius = "4px";
+    label.style.fontSize = `${Math.min(12, Math.max(8, rect.height / 2))}px`; // Responsive font size
+    label.textContent = index.toString();
+
+    const labelWidth = 20;
+    const labelHeight = 16;
+
+    // Default position (top-right corner inside the box)
+    let labelTop = top + 2;
+    let labelLeft = left + rect.width - labelWidth - 2;
+
+    // Adjust if box is too small
+    if (rect.width < labelWidth + 4 || rect.height < labelHeight + 4) {
+      // Position outside the box if it's too small
+      labelTop = top - labelHeight - 2;
+      labelLeft = left + rect.width - labelWidth;
+    }
+
+    label.style.top = `${labelTop}px`;
+    label.style.left = `${labelLeft}px`;
+
+    // Add to container
+    container.appendChild(overlay);
+    container.appendChild(label);
+
+    // Store reference for cleanup
+    element.setAttribute(
+      "browser-user-highlight-id",
+      `playwright-highlight-${index}`,
+    );
+
+    return index + 1;
+  }
+
+  // Helper function to generate XPath as a tree
+  function getXPathTree(element: HTMLElement, stopAtBoundary: boolean = true) {
+    const segments = [];
+    let currentElement = element;
+
+    while (currentElement && currentElement.nodeType === Node.ELEMENT_NODE) {
+      // Stop if we hit a shadow root or iframe
+      if (
+        stopAtBoundary &&
+        (currentElement.parentNode instanceof ShadowRoot ||
+          currentElement.parentNode instanceof HTMLIFrameElement)
+      ) {
+        break;
+      }
+
+      let index = 0;
+      let sibling = currentElement.previousSibling;
+      while (sibling) {
+        if (
+          sibling.nodeType === Node.ELEMENT_NODE &&
+          sibling.nodeName === currentElement.nodeName
+        ) {
+          index++;
+        }
+        sibling = sibling.previousSibling;
+      }
+
+      const tagName = currentElement.nodeName.toLowerCase();
+      const xpathIndex = index > 0 ? `[${index + 1}]` : "";
+      segments.unshift(`${tagName}${xpathIndex}`);
+
+      currentElement = currentElement.parentNode as HTMLElement;
+    }
+
+    return segments.join("/");
+  }
+
+  function isElementAccepted(element: Element) {
+    const leafElementDenyList = new Set([
+      "svg",
+      "script",
+      "style",
+      "link",
+      "meta",
+    ]);
+    return !leafElementDenyList.has(element.tagName.toLowerCase());
+  }
+
+  function isInteractiveElement(
+    element: HTMLElement | HTMLFormElement | HTMLInputElement,
+  ) {
+    if (element.tagName.toLowerCase() === "body") {
+      return false;
+    }
+
+    const interactiveElements = new Set([
+      "a",
+      "button",
+      "details",
+      "embed",
+      "input",
+      "label",
+      "menu",
+      "menuitem",
+      "object",
+      "select",
+      "textarea",
+      "summary",
+    ]);
+
+    const interactiveRoles = new Set([
+      "button",
+      "menu",
+      "menuitem",
+      "link",
+      "checkbox",
+      "radio",
+      "slider",
+      "tab",
+      "tabpanel",
+      "textbox",
+      "combobox",
+      "grid",
+      "listbox",
+      "option",
+      "progressbar",
+      "scrollbar",
+      "searchbox",
+      "switch",
+      "tree",
+      "treeitem",
+      "spinbutton",
+      "tooltip",
+      "a-button-inner",
+      "a-dropdown-button",
+      "click",
+      "menuitemcheckbox",
+      "menuitemradio",
+      "a-button-text",
+      "button-text",
+      "button-icon",
+      "button-icon-only",
+      "button-text-icon-only",
+      "dropdown",
+      "combobox",
+    ]);
+
+    const tagName = element.tagName.toLowerCase();
+    const role = element.getAttribute("role") ?? "";
+    const ariaRole = element.getAttribute("aria-role") ?? "";
+    const tabIndex = element.getAttribute("tabindex");
+
+    const hasAddressInputClass = element.classList.contains(
+      "address-input__container__input",
+    );
+
+    const hasInteractiveRole =
+      hasAddressInputClass ||
+      interactiveElements.has(tagName) ||
+      interactiveRoles.has(role) ||
+      interactiveRoles.has(ariaRole) ||
+      (tabIndex !== null &&
+        tabIndex !== "-1" &&
+        element.parentElement?.tagName.toLowerCase() !== "body") ||
+      element.getAttribute("data-action") === "a-dropdown-select" ||
+      element.getAttribute("data-action") === "a-dropdown-button";
+
+    if (hasInteractiveRole) {
+      return true;
+    }
+
+    const style = window.getComputedStyle(element);
+
+    const hasClickHandler =
+      element.onclick !== null ||
+      element.getAttribute("onclick") !== null ||
+      element.hasAttribute("ng-click") ||
+      element.hasAttribute("@click") ||
+      element.hasAttribute("v-on:click");
+
+    function getEventListeners(el: HTMLElement) {
+      try {
+        //@ts-ignore
+        return window.getEventListeners?.(el) || {};
+      } catch (e) {
+        const listeners: Record<
+          string,
+          { listener: string; useCapture: boolean }[]
+        > = {};
+
+        const eventTypes = [
+          "click",
+          "mousedown",
+          "mouseup",
+          "touchstart",
+          "touchend",
+          "keydown",
+          "keyup",
+          "focus",
+          "blur",
+        ];
+
+        for (const type of eventTypes) {
+          // const handler = el[`on${type}`];
+          const handler = el.getAttribute(`on${type}`);
+
+          if (handler) {
+            listeners[type] = [
+              {
+                listener: handler,
+                useCapture: false,
+              },
+            ];
+          }
+        }
+
+        return listeners;
+      }
+    }
+
+    const listeners = getEventListeners(element);
+
+    const hasClickListeners =
+      listeners &&
+      (listeners.click?.length > 0 ||
+        listeners.mousedown?.length > 0 ||
+        listeners.mouseup?.length > 0 ||
+        listeners.touchstart?.length > 0 ||
+        listeners.touchend?.length > 0);
+
+    const hasAriaProps =
+      element.hasAttribute("aria-expanded") ||
+      element.hasAttribute("aria-pressed") ||
+      element.hasAttribute("aria-selected") ||
+      element.hasAttribute("aria-checked");
+
+    const isDraggable =
+      element.draggable || element.getAttribute("draggable") === "true";
+
+    if (
+      element.tagName.toLowerCase() === "body" ||
+      element.parentElement?.tagName.toLowerCase() === "body"
+    ) {
+      return false;
+    }
+
+    return hasAriaProps || hasClickHandler || hasClickListeners || isDraggable;
+  }
+
+  function isElementVisible(element: HTMLElement) {
+    const style = window.getComputedStyle(element);
+    return (
+      element.offsetWidth > 0 &&
+      element.offsetHeight > 0 &&
+      style.visibility !== "hidden" &&
+      style.display !== "none"
+    );
+  }
+
+  function isTopElement(element: HTMLElement) {
+    let doc = element.ownerDocument;
+
+    if (doc !== window.document) {
+      return true;
+    }
+
+    const shadowRoot = element.getRootNode();
+
+    if (shadowRoot instanceof ShadowRoot) {
+      const rect = element.getBoundingClientRect();
+      const point = {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+      };
+
+      try {
+        const topEl = shadowRoot.elementFromPoint(point.x, point.y);
+        if (!topEl) return false;
+
+        let current = topEl;
+
+        while (current) {
+          if (current === element) return true;
+          current = current.parentElement as HTMLElement;
+        }
+        return false;
+      } catch (e) {
+        return true;
+      }
+    }
+
+    const rect = element.getBoundingClientRect();
+
+    if (viewportExpansion === -1) {
+      return true;
+    }
+
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+    const viewportTop = -viewportExpansion + scrollY;
+    const viewportLeft = -viewportExpansion + scrollX;
+    const viewportBottom = window.innerHeight + viewportExpansion + scrollY;
+    const viewportRight = window.innerWidth + viewportExpansion + scrollX;
+
+    const absTop = rect.top + scrollY;
+    const absLeft = rect.left + scrollX;
+    const absBottom = rect.bottom + scrollY;
+    const absRight = rect.right + scrollX;
+
+    if (
+      absBottom < viewportTop ||
+      absTop > viewportBottom ||
+      absRight < viewportLeft ||
+      absLeft > viewportRight
+    ) {
+      return false;
+    }
+
+    try {
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+
+      const point = {
+        x: centerX,
+        y: centerY,
+      };
+
+      if (
+        point.x < 0 ||
+        point.x >= window.innerWidth ||
+        point.y < 0 ||
+        point.y >= window.innerHeight
+      ) {
+        return true;
+      }
+
+      const topEl = document.elementFromPoint(point.x, point.y);
+      if (!topEl) return false;
+
+      let current = topEl;
+      while (current && current !== document.documentElement) {
+        if (current === element) return true;
+        current = current.parentElement as HTMLElement;
+      }
+      return false;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  function isTextNodeVisible(textNode: Text) {
+    const range = document.createRange();
+    range.selectNodeContents(textNode);
+    const rect = range.getBoundingClientRect();
+
+    return (
+      rect.width !== 0 &&
+      rect.height !== 0 &&
+      rect.top >= 0 &&
+      rect.top <= window.innerHeight &&
+      textNode.parentElement?.checkVisibility({
+        checkOpacity: true,
+        checkVisibilityCSS: true,
+      })
+    );
+  }
+
+  function buildDomTree(
+    node: Element | Text,
+    parentIframe: HTMLIFrameElement | null = null,
+  ) {
+    if (!node) {
+      return null;
+    }
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      const textContent = node.textContent?.trim();
+      if (textContent && isTextNodeVisible(node as Text)) {
+        return {
+          type: "TEXT_NODE",
+          text: textContent,
+          isVisible: true,
+        };
+      }
+      return null;
+    }
+
+    if (
+      node.nodeType === Node.ELEMENT_NODE &&
+      !isElementAccepted(node as Element)
+    ) {
+      return null;
+    }
+
+    const nodeData: ElementNode = {
+      tagName: (node as Element).tagName
+        ? (node as Element).tagName.toLowerCase()
+        : null,
+      attributes: {},
+      xpath:
+        node.nodeType === Node.ELEMENT_NODE
+          ? getXPathTree(node as HTMLElement, true)
+          : null,
+      children: [],
+      viewportCoordinates: {} as RectCoordinates,
+      pageCoordinates: {} as RectCoordinates,
+      viewport: {} as Viewport,
+      isInteractive: false,
+      isVisible: false,
+      isTopElement: false,
+      highlightIndex: -1,
+      shadowRoot: false,
+    };
+
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const rect = (node as Element).getBoundingClientRect();
+      const scrollX = window.scrollX;
+      const scrollY = window.scrollY;
+
+      nodeData.viewportCoordinates = {
+        topLeft: {
+          x: Math.round(rect.left),
+          y: Math.round(rect.top),
+        },
+        topRight: {
+          x: Math.round(rect.right),
+          y: Math.round(rect.top),
+        },
+        bottomLeft: {
+          x: Math.round(rect.left),
+          y: Math.round(rect.bottom),
+        },
+        bottomRight: {
+          x: Math.round(rect.right),
+          y: Math.round(rect.bottom),
+        },
+        center: {
+          x: Math.round(rect.left + rect.width / 2),
+          y: Math.round(rect.top + rect.height / 2),
+        },
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+
+      nodeData.pageCoordinates = {
+        topLeft: {
+          x: Math.round(rect.left + scrollX),
+          y: Math.round(rect.top + scrollY),
+        },
+        topRight: {
+          x: Math.round(rect.right + scrollX),
+          y: Math.round(rect.top + scrollY),
+        },
+        bottomLeft: {
+          x: Math.round(rect.left + scrollX),
+          y: Math.round(rect.bottom + scrollY),
+        },
+        bottomRight: {
+          x: Math.round(rect.right + scrollX),
+          y: Math.round(rect.bottom + scrollY),
+        },
+        center: {
+          x: Math.round(rect.left + rect.width / 2 + scrollX),
+          y: Math.round(rect.top + rect.height / 2 + scrollY),
+        },
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+
+      nodeData.viewport = {
+        scrollX: Math.round(scrollX),
+        scrollY: Math.round(scrollY),
+        width: window.innerWidth,
+        height: window.innerHeight,
+      };
+    }
+
+    if (node.nodeType === Node.ELEMENT_NODE && (node as Element).attributes) {
+      const attributeNames = (node as Element).getAttributeNames?.() || [];
+      for (const name of attributeNames) {
+        //@ts-ignore
+        nodeData.attributes[name] = node.getAttribute(name);
+      }
+    }
+
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const isInteractive = isInteractiveElement(node as HTMLElement);
+      const isVisible = isElementVisible(node as HTMLElement);
+      const isTop = isTopElement(node as HTMLElement);
+
+      nodeData.isInteractive = isInteractive;
+      nodeData.isVisible = isVisible;
+      nodeData.isTopElement = isTop;
+
+      if (isInteractive && isVisible && isTop) {
+        nodeData.highlightIndex = highlightIndex++;
+        if (doHighlightElements) {
+          if (focusHighlightIndex >= 0) {
+            if (focusHighlightIndex === nodeData.highlightIndex) {
+              highlightElement(
+                node as HTMLElement,
+                nodeData.highlightIndex,
+                parentIframe,
+              );
+            }
+          } else {
+            highlightElement(
+              node as HTMLElement,
+              nodeData.highlightIndex,
+              parentIframe,
+            );
+          }
+        }
+      }
+    }
+
+    if ((node as Element).shadowRoot) {
+      nodeData.shadowRoot = true;
+    }
+
+    // Handle shadow DOM
+    if ((node as Element).shadowRoot) {
+      const shadowChildren = Array.from(
+        (node as Element).shadowRoot!.childNodes,
+      ).map((child) => buildDomTree(child as Element, parentIframe));
+      // @ts-ignore
+      nodeData.children.push(...shadowChildren);
+    }
+
+    // Handle iframes
+    if ((node as Element).tagName === "IFRAME") {
+      try {
+        const iframeDoc =
+          (node as HTMLIFrameElement).contentDocument ||
+          (node as HTMLIFrameElement).contentWindow?.document;
+
+        if (iframeDoc) {
+          const iframeChildren = Array.from(iframeDoc.body.childNodes).map(
+            (child) =>
+              buildDomTree(child as Element, node as HTMLIFrameElement),
+          );
+          //@ts-ignore
+          nodeData.children.push(...iframeChildren);
+        }
+      } catch (e) {
+        console.warn("Unable to access iframe:", node);
+      }
+    } else {
+      const children = Array.from(node.childNodes).map((child) =>
+        buildDomTree(child as Element, parentIframe),
+      );
+      //@ts-ignore
+      nodeData.children.push(...children);
+    }
+
+    return nodeData;
+  }
+
+  return buildDomTree(document.body);
+};
+
+export default getDomRepresentation;
+
+```
+
+`/Users/dylanelens/Documents/AgentLlm/tools/BrowserController.ts`:
+
+```ts
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type Page,
+} from "playwright";
 import getDomRepresentation from "./utils/dom-representation"; // your dom snippet
 import type { DomTree } from "../types";
 import { BrowserAction } from "../prompts/ActionRegistry";
@@ -2505,5 +5266,7 @@ async function main() {
 
 main();
 
+```
+```
 ```
 ```

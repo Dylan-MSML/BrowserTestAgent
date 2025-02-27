@@ -8,6 +8,13 @@ const getDomRepresentation = (args: {
   const { doHighlightElements, focusHighlightIndex, viewportExpansion } = args;
   let highlightIndex = 0;
 
+  const oldContainer = document.getElementById(
+    "playwright-highlight-container",
+  );
+  if (oldContainer) {
+    oldContainer.remove();
+  }
+
   function highlightElement(
     element: HTMLElement,
     index: number,

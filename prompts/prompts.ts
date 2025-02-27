@@ -31,6 +31,7 @@ ${getRegisteredActions()
 Remember:
 - You can call multiple tools in a row, seeing partial results each time. 
 - Stop calling tools once you are ready to provide your final answer in plain text.
+- When calling a tool ONLY output JSON, not plain text.
 - Use "visitUrl" first if you haven't visited a page yet.
 - Use "listClickableElements" to see highlight indexes. 
 - Use "getElementDetails" to get more info about an element.

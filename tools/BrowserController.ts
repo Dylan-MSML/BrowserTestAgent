@@ -31,7 +31,9 @@ export class BrowserAgent {
   }
 
   private async goto(url: string): Promise<void> {
-    if (!this.page) throw new Error("No Page found. Did you call init()?");
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
     await this.page.goto(url, { waitUntil: "networkidle" });
   }
 
@@ -40,13 +42,19 @@ export class BrowserAgent {
     focusHighlightIndex = -1,
     viewportExpansion = 0,
   ): Promise<DomTree> {
-    if (!this.page) throw new Error("No Page found. Did you call init()?");
+    this.domSnapshot = null;
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
+
     const dom = (await this.page.evaluate(getDomRepresentation, {
-      doHighlightElements,
-      focusHighlightIndex,
-      viewportExpansion,
+      doHighlightElements: true,
+      focusHighlightIndex: focusHighlightIndex,
+      viewportExpansion: viewportExpansion,
     })) as DomTree;
+
     this.domSnapshot = dom;
+
     return dom;
   }
 
@@ -59,7 +67,7 @@ export class BrowserAgent {
       ? args.trim()
       : "https://" + args.trim();
     await this.goto(url);
-    await this.updateDomRepresentation(false, -1, 0);
+    await this.updateDomRepresentation(true, -1, 0);
     return `Visited URL: ${url} and updated DOM snapshot.`;
   }
 
@@ -68,8 +76,12 @@ export class BrowserAgent {
     "Returns a JSON array of { highlightIndex, snippet } for clickable elements.",
   )
   public async listClickableElements(_args: string): Promise<string> {
-    if (!this.domSnapshot)
+    if (!this.domSnapshot) {
       return "No DOM snapshot available. Use visitUrl first.";
+    }
+
+    await this.updateDomRepresentation(true, -1, 0);
+
     const clickable: Array<{ highlightIndex: number; snippet: string }> = [];
 
     const walk = (node: any) => {
@@ -106,7 +118,11 @@ export class BrowserAgent {
 
     const walk = (node: any) => {
       if (!node) return;
-      if (node.highlightIndex === index) found = node;
+
+      if (node.highlightIndex === index) {
+        found = node;
+      }
+
       if (node.children && !found) {
         for (const c of node.children) {
           if (c && typeof c === "object" && "tagName" in c) {
@@ -134,18 +150,30 @@ export class BrowserAgent {
     "Clicks on an element by its highlightIndex in the current DOM",
   )
   public async clickElementByHighlightIndex(args: string): Promise<string> {
-    if (!this.page) throw new Error("No Page found. Did you call init()?");
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
+
     const highlightIndex = parseInt(args, 10);
+
     if (isNaN(highlightIndex)) {
       return `Could not parse highlightIndex from "${args}". Must be a number.`;
     }
+
     const selector = `[browser-user-highlight-id="playwright-highlight-${highlightIndex}"]`;
+
     const elementHandle = await this.page.$(selector);
-    if (!elementHandle)
+
+    if (!elementHandle) {
       return `Error: No element found with highlightIndex = ${highlightIndex}`;
+    }
+
     await elementHandle.click();
 
-    await this.updateDomRepresentation();
+    await this.page.waitForLoadState("networkidle");
+
+    await this.updateDomRepresentation(true, -1, 0);
+
     return `Clicked element with highlightIndex = ${highlightIndex}.`;
   }
 

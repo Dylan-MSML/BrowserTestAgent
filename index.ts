@@ -101,6 +101,7 @@ async function main() {
       console.log(
         `Invoking tool '${invocation.tool}' with args: ${invocation.args}`,
       );
+
       let toolResult: string;
       try {
         toolResult = await toolDef.handler(agent, invocation.args);
