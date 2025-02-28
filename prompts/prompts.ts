@@ -35,8 +35,12 @@ ${getRegisteredActions()
 
 Remember:
 - **ALWAYS** respond with valid JSON.
+- **ALWAYS** click on inputs before filling them to determine if they are dropdowns.
 - **NEVER** wrap JSON in a code block.
 - **NEVER** output plain text without JSON.
 - **NEVER** include extra keys besides "tool", "arguments", or "message".
 - **NEVER** talk about why you are doing something; just do it.
+- **IF** an action fails try to do something else unless it's impossible.
+- **SOME** inputs are dropdowns, if you suspect that, select the first option.
+
 `;

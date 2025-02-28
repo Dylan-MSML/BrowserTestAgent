@@ -74,7 +74,7 @@ export class BrowserAgent {
 
   @BrowserAction(
     "listClickableElements",
-    "Returns a JSON array of { highlightIndex, snippet } for clickable elements.",
+    "Returns a JSON array of { highlightIndex, snippet } for clickable elements. if there is a label nearby, it will be above the current element.",
   )
   public async listClickableElements(_args: string): Promise<string> {
     if (!this.domSnapshot) {
@@ -83,7 +83,11 @@ export class BrowserAgent {
 
     await this.updateDomRepresentation(true, -1, 0);
 
-    const clickable: Array<{ highlightIndex: number; snippet: string }> = [];
+    const clickable: Array<{
+      highlightIndex: number;
+      snippet: string;
+      type: string;
+    }> = [];
 
     const walk = (node: any) => {
       if (!node) return;
@@ -91,6 +95,7 @@ export class BrowserAgent {
         clickable.push({
           highlightIndex: node.highlightIndex,
           snippet: this.getAllText(node),
+          type: node.tagName,
         });
       }
       if (node.children) {
@@ -183,7 +188,7 @@ export class BrowserAgent {
 
   @BrowserAction(
     "fillInputByHighlightIndex",
-    'Fills an input at "highlightIndex" with text. Format: "<index>||<text>"',
+    'Fills an input at "highlightIndex" with text. Format: {"tool": "fillInputByHighlightIndex", "args": "<highlightIndex||sometext"}',
   )
   public async fillInputByHighlightIndex(args: string): Promise<string> {
     if (!this.page) throw new Error("No Page found. Did you call init()?");

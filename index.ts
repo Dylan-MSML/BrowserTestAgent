@@ -1,7 +1,6 @@
-// index.ts
+import { BrowserAgent } from "./tools/BrowserController.ts";
 import { getRegisteredActions } from "./prompts/ActionRegistry.ts";
 import { systemPrompt } from "./prompts/prompts.ts";
-import { BrowserAgent } from "./tools/BrowserController.ts";
 import type { Message, OpenAIChatRequest, OpenAIResponse } from "./types.ts";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -71,6 +70,7 @@ async function main() {
   const agent = new BrowserAgent();
   await agent.init(false);
 
+  console.log("system prompt:", systemPrompt);
   let messages: Message[] = [
     { role: "system", content: systemPrompt },
     { role: "user", content: userPrompt },
