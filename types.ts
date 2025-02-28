@@ -47,7 +47,7 @@ export interface Viewport {
   height: number;
 }
 
-interface TextNode {
+export interface TextNode {
   type: "TEXT_NODE";
   text: string;
   isVisible: boolean;

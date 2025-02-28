@@ -5,7 +5,7 @@ import {
   type Page,
 } from "playwright";
 import getDomRepresentation from "./utils/dom-representation";
-import type { DomTree } from "../types";
+import type { DomTree, ElementNode, TextNode } from "../types";
 import { BrowserAction } from "../prompts/ActionRegistry";
 
 export class BrowserAgent {
@@ -86,11 +86,12 @@ export class BrowserAgent {
     const clickable: Array<{
       highlightIndex: number;
       snippet: string;
-      type: string;
+      type: string | null;
     }> = [];
 
-    const walk = (node: any) => {
+    const walk = (node: ElementNode | null) => {
       if (!node) return;
+
       if (node.isInteractive && node.highlightIndex >= 0) {
         clickable.push({
           highlightIndex: node.highlightIndex,
@@ -120,9 +121,9 @@ export class BrowserAgent {
       return "No DOM snapshot available. Use visitUrl first.";
     const index = parseInt(args.trim(), 10);
     if (isNaN(index)) return `Could not parse highlightIndex from "${args}".`;
-    let found: any = null;
+    let found: ElementNode | null = null;
 
-    const walk = (node: any) => {
+    const walk = (node: ElementNode | null) => {
       if (!node) return;
 
       if (node.highlightIndex === index) {
@@ -144,6 +145,7 @@ export class BrowserAgent {
       return `No element found with highlightIndex = ${index}`;
     }
 
+    found = found as ElementNode;
     const detail = {
       tagName: found.tagName,
       attributes: found.attributes,
@@ -220,16 +222,18 @@ export class BrowserAgent {
     return this.domSnapshot;
   }
 
-  private getAllText(node: any): string {
+  private getAllText(node: ElementNode | null): string {
     const collectedTexts: string[] = [];
 
-    function collectText(n: any) {
+    function collectText(n: ElementNode | TextNode | null) {
       if (!n) return;
 
+      n = n as TextNode;
       if (n.type === "TEXT_NODE" && n.text) {
         collectedTexts.push(n.text);
       }
 
+      n = n as unknown as ElementNode;
       if (n.attributes) {
         if (n.attributes.placeholder) {
           collectedTexts.push(n.attributes.placeholder);
