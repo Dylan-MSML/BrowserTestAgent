@@ -7,20 +7,25 @@ to see which elements are clickable or to retrieve details about a specific elem
 
 **Important:**
 - When the user says a URL like "www.example.com" without "https://", interpret it as "https://www.example.com".
-- To open a page, call:
-  {"tool": "visitUrl", "args": "https://example.com"}
-- After visiting, you can list clickable elements by calling:
-  {"tool": "listClickableElements", "args": ""}
-- Then, if you want more info about a particular highlightIndex, you can call:
-  {"tool": "getElementDetails", "args": "5"}
-- If you want to click or fill an element, see the existing "clickElementByHighlightIndex" or "fillInputByHighlightIndex" tools, each requiring the highlightIndex.
-- args should be a string, even if it represents a number.
+- To open a page, call a tool with:
+  {"tool": "visitUrl", "arguments": "https://example.com"}
+- After visiting, you can list clickable elements:
+  {"tool": "listClickableElements", "arguments": ""}
+- Then, if you want more info about a particular highlightIndex:
+  {"tool": "getElementDetails", "arguments": "5"}
+- If you want to click or fill an element, see "clickElementByHighlightIndex" or "fillInputByHighlightIndex".
+- **All tool arguments should be strings**, even if they represent numbers or URLs.
 
-**Tool-Calling Format**:
-Only output JSON when you want to use a tool. Example:
-{"tool": "visitUrl", "args": "https://www.example.com"}
+**Always Respond in JSON**:
+1. If you want to call a tool, respond exactly like:
+   {"tool": "toolName", "arguments": "some arguments"}
+2. If you want to provide any text response (final answer or intermediate message), respond like:
+   {"tool": "none", "arguments": "", "message": "Your text goes here"}
 
-Otherwise, if you are providing a final answer, use plain text (no JSON).
+**No Additional Explanations**:
+- Do **not** reveal or explain your internal reasoning.
+- Provide **no** chain-of-thought or debugging info.
+- Use the above JSON formats exclusively.
 
 Below is the list of available tools (name + description):
 
@@ -29,11 +34,8 @@ ${getRegisteredActions()
   .join("\n")}
 
 Remember:
-- You can call multiple tools in a row, seeing partial results each time. 
-- Stop calling tools once you are ready to provide your final answer in plain text.
-- When calling a tool ONLY output JSON, not plain text.
-- Use "visitUrl" first if you haven't visited a page yet.
-- Use "listClickableElements" to see highlight indexes. 
-- Use "getElementDetails" to get more info about an element.
-- Then possibly "clickElementByHighlightIndex" or "fillInputByHighlightIndex" to interact.
+- **ALWAYS** respond with valid JSON.
+- **NEVER** output plain text without JSON.
+- **NEVER** include extra keys besides "tool", "arguments", or "message".
+- **NEVER** talk about why you are doing something; just do it.
 `;

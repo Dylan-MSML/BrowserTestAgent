@@ -11,16 +11,12 @@ if (!OPENAI_API_KEY) {
   );
 }
 
-/**
- * Call the OpenAI Chat API with the given messages,
- * returning [assistantText, headers].
- */
 async function callOpenAI(messages: Message[]): Promise<[string, Headers]> {
   const body: OpenAIChatRequest = {
-    model: "gpt-4o-mini", // or "gpt-4" or "gpt-3.5-turbo", etc.
+    model: "gpt-4o",
     messages,
     temperature: 0.7,
-    max_tokens: 500,
+    max_tokens: 60,
   };
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -44,15 +40,20 @@ async function callOpenAI(messages: Message[]): Promise<[string, Headers]> {
 
 function parseToolInvocation(
   message: string,
-): { tool: string; args: string } | null {
+): { tool: string; args: string; message?: string } | null {
   try {
     const parsed = JSON.parse(message);
     if (
       parsed &&
       typeof parsed.tool === "string" &&
-      typeof parsed.args === "string"
+      typeof parsed.arguments === "string"
     ) {
-      return { tool: parsed.tool, args: parsed.args };
+      return {
+        tool: parsed.tool,
+        args: parsed.arguments,
+        message:
+          typeof parsed.message === "string" ? parsed.message : undefined,
+      };
     }
   } catch (err) {
     console.error("Failed to parse JSON tool invocation:", err);
@@ -76,7 +77,7 @@ async function main() {
   ];
 
   let stepCount = 0;
-  const maxSteps = 20;
+  const maxSteps = 40;
 
   while (true) {
     stepCount++;

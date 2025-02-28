@@ -43,6 +43,7 @@ export class BrowserAgent {
     viewportExpansion = 0,
   ): Promise<DomTree> {
     this.domSnapshot = null;
+
     if (!this.page) {
       throw new Error("No Page found. Did you call init()?");
     }
@@ -133,7 +134,10 @@ export class BrowserAgent {
       }
     };
     walk(this.domSnapshot);
-    if (!found) return `No element found with highlightIndex = ${index}`;
+
+    if (!found) {
+      return `No element found with highlightIndex = ${index}`;
+    }
 
     const detail = {
       tagName: found.tagName,
@@ -212,20 +216,44 @@ export class BrowserAgent {
   }
 
   private getAllText(node: any): string {
-    let text = "";
-    const dfs = (n: any) => {
+    const collectedTexts: string[] = [];
+
+    function collectText(n: any) {
       if (!n) return;
-      if (n.children) {
-        for (const c of n.children) {
-          if (c && c.type === "TEXT_NODE" && c.text) {
-            text += c.text + " ";
-          } else if (c && typeof c === "object" && "tagName" in c) {
-            dfs(c);
-          }
+
+      if (n.type === "TEXT_NODE" && n.text) {
+        collectedTexts.push(n.text);
+      }
+
+      if (n.attributes) {
+        if (n.attributes.placeholder) {
+          collectedTexts.push(n.attributes.placeholder);
+        }
+        if (n.attributes.alt) {
+          collectedTexts.push(n.attributes.alt);
+        }
+        if (n.attributes.title) {
+          collectedTexts.push(n.attributes.title);
+        }
+        if (n.attributes["aria-label"]) {
+          collectedTexts.push(n.attributes["aria-label"]);
+        }
+        if (n.attributes.value) {
+          collectedTexts.push(n.attributes.value);
         }
       }
-    };
-    dfs(node);
-    return text.trim();
+
+      if (n.children) {
+        for (const child of n.children) {
+          collectText(child);
+        }
+      }
+    }
+
+    collectText(node);
+    return collectedTexts
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .join(" ");
   }
 }
