@@ -13,7 +13,7 @@ if (!OPENAI_API_KEY) {
 
 async function callOpenAI(messages: Message[]): Promise<[string, Headers]> {
   const body: OpenAIChatRequest = {
-    model: "gpt-4o",
+    model: "gpt-4o-mini",
     messages,
     temperature: 0.7,
     max_tokens: 60,
@@ -81,7 +81,6 @@ async function main() {
 
   while (true) {
     stepCount++;
-    // await new Promise((resolve) => setTimeout(resolve, 5000));
 
     const [response, headers] = await callOpenAI(messages);
     console.log("\nLLM Agent response:\n", response);

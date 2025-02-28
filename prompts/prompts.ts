@@ -35,6 +35,7 @@ ${getRegisteredActions()
 
 Remember:
 - **ALWAYS** respond with valid JSON.
+- **NEVER** wrap JSON in a code block.
 - **NEVER** output plain text without JSON.
 - **NEVER** include extra keys besides "tool", "arguments", or "message".
 - **NEVER** talk about why you are doing something; just do it.
