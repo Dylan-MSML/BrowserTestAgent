@@ -258,10 +258,6 @@ export class BrowserAgent {
     return "Browser closed successfully.";
   }
 
-  public getDomSnapshot(): DomTree | null {
-    return this.domSnapshot;
-  }
-
   private getAllText(node: ElementNode | null): string {
     const collectedTexts: string[] = [];
 
