@@ -81,6 +81,9 @@ export class BrowserAgent {
       return "No DOM snapshot available. Use visitUrl first.";
     }
 
+    this.page?.waitForLoadState("networkidle");
+    this.page?.waitForLoadState("load");
+    this.page?.waitForLoadState("domcontentloaded");
     await this.updateDomRepresentation(true, -1, 0);
 
     const clickable: Array<{
@@ -117,10 +120,16 @@ export class BrowserAgent {
     "Provide detail about a single element by highlightIndex.",
   )
   public async getElementDetails(args: string): Promise<string> {
-    if (!this.domSnapshot)
+    if (!this.domSnapshot) {
       return "No DOM snapshot available. Use visitUrl first.";
+    }
+
     const index = parseInt(args.trim(), 10);
-    if (isNaN(index)) return `Could not parse highlightIndex from "${args}".`;
+
+    if (isNaN(index)) {
+      return `Could not parse highlightIndex from "${args}".`;
+    }
+
     let found: ElementNode | null = null;
 
     const walk = (node: ElementNode | null) => {
@@ -181,11 +190,42 @@ export class BrowserAgent {
 
     await elementHandle.click();
 
-    await this.page.waitForLoadState("networkidle");
+    await this.page.waitForLoadState("networkidle", { timeout: 6000 });
+
+    //sleep for 3 seconds to allow the page load
+    await new Promise((resolve) => setTimeout(resolve, 3000));
 
     await this.updateDomRepresentation(true, -1, 0);
 
     return `Clicked element with highlightIndex = ${highlightIndex}.`;
+  }
+  @BrowserAction(
+    "openDropdown",
+    "Opens a dropdown or autocomplete input and updates the DOM snapshot. e.g. openDropdown 5",
+  )
+  public async openDropdown(args: string): Promise<string> {
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
+
+    const highlightIndex = parseInt(args.trim(), 10);
+
+    if (isNaN(highlightIndex)) {
+      return `Could not parse highlightIndex from "${args}".`;
+    }
+
+    const selector = `[browser-user-highlight-id="playwright-highlight-${highlightIndex}"]`;
+    const elementHandle = await this.page.$(selector);
+
+    if (!elementHandle) {
+      return `Error: No element found with highlightIndex = ${highlightIndex}`;
+    }
+
+    await elementHandle.click();
+    await this.page.waitForLoadState("networkidle", { timeout: 6000 });
+
+    await this.updateDomRepresentation(true, -1, 0);
+    return `Opened dropdown/autocomplete for element with highlightIndex = ${highlightIndex} and updated the DOM snapshot.`;
   }
 
   @BrowserAction(

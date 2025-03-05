@@ -4,6 +4,7 @@ import { systemPrompt } from "./prompts/prompts.ts";
 import type { Message, OpenAIChatRequest, OpenAIResponse } from "./types.ts";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
 if (!OPENAI_API_KEY) {
   throw new Error(
     "Missing OPENAI_API_KEY env variable. Please set it before running the script.",
@@ -90,7 +91,7 @@ async function main() {
 
     if (invocation) {
       const toolDef = getRegisteredActions().find(
-        (t) => t.name === invocation.tool,
+        ({ name }) => name === invocation.tool,
       );
 
       if (!toolDef) {

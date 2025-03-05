@@ -42,5 +42,7 @@ Remember:
 - **NEVER** talk about why you are doing something; just do it.
 - **IF** an action fails try to do something else unless it's impossible.
 - **SOME** inputs are dropdowns, if you suspect that, select the first option.
-
+- **IF** you suspect a dropdown first try to use our function for dropdown.
+- **IF** you think you are done filling in a form, explain why you think so.
+- **NEVER** forget to use a tool call, unless you are COMPLETELY done.
 `;
