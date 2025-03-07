@@ -11,7 +11,7 @@ if (!OPENAI_API_KEY) {
   );
 }
 
-async function callOpenAI(messages: Message[]): Promise<[string, Headers]> {
+async function callOpenAI(messages: Message[]): Promise<string> {
   const body: OpenAIChatRequest = {
     model: "gpt-4o-mini",
     messages,
@@ -35,7 +35,7 @@ async function callOpenAI(messages: Message[]): Promise<[string, Headers]> {
 
   const data = (await response.json()) as OpenAIResponse;
   const assistantText = data.choices[0].message.content;
-  return [assistantText, response.headers];
+  return assistantText;
 }
 
 function parseToolInvocation(
@@ -71,7 +71,6 @@ async function main() {
   const agent = new BrowserAgent();
   await agent.init(false);
 
-  console.log("system prompt:", systemPrompt);
   let messages: Message[] = [
     { role: "system", content: systemPrompt },
     { role: "user", content: userPrompt },
@@ -83,7 +82,7 @@ async function main() {
   while (true) {
     stepCount++;
 
-    const [response, headers] = await callOpenAI(messages);
+    const response = await callOpenAI(messages);
     console.log("\nLLM Agent response:\n", response);
 
     const invocation = parseToolInvocation(response);
