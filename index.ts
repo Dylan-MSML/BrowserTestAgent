@@ -13,10 +13,10 @@ if (!OPENAI_API_KEY) {
 
 async function callOpenAI(messages: Message[]): Promise<string> {
   const body: OpenAIChatRequest = {
-    model: "gpt-4o-mini",
+    model: "gpt-4o",
     messages,
     temperature: 0.7,
-    max_tokens: 60,
+    max_tokens: 600,
   };
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {

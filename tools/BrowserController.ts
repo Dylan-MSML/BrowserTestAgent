@@ -124,10 +124,24 @@ export class BrowserAgent {
       return "No DOM snapshot available. Use visitUrl first.";
     }
 
-    const index = parseInt(args.trim(), 10);
+    const detail = await this.elementDetailsByHighlightIndex(
+      parseInt(args.trim(), 10),
+    );
 
-    if (isNaN(index)) {
-      return `Could not parse highlightIndex from "${args}".`;
+    return JSON.stringify(detail, null, 2);
+  }
+
+  private async elementDetailsByHighlightIndex(
+    highlightIndex: number,
+  ): Promise<{
+    tagName: string | null;
+    attributes: Record<string, string>;
+    isVisible: boolean;
+    isTopElement: boolean;
+    textNearby: string;
+  } | null> {
+    if (!this.domSnapshot) {
+      return null;
     }
 
     let found: ElementNode | null = null;
@@ -135,7 +149,7 @@ export class BrowserAgent {
     const walk = (node: ElementNode | null) => {
       if (!node) return;
 
-      if (node.highlightIndex === index) {
+      if (node.highlightIndex === highlightIndex) {
         found = node;
       }
 
@@ -151,10 +165,10 @@ export class BrowserAgent {
     walk(this.domSnapshot);
 
     if (!found) {
-      return `No element found with highlightIndex = ${index}`;
+      return null;
     }
-
     found = found as ElementNode;
+
     const detail = {
       tagName: found.tagName,
       attributes: found.attributes,
@@ -162,7 +176,24 @@ export class BrowserAgent {
       isTopElement: found.isTopElement,
       textNearby: this.getAllText(found).slice(0, 300),
     };
-    return JSON.stringify(detail, null, 2);
+
+    return detail;
+  }
+
+  private async getElementHandleByHighlightIndex(highlightIndex: number) {
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
+
+    const details = await this.elementDetailsByHighlightIndex(highlightIndex);
+    
+    if (!details || !details.attributes.id) {
+      // Fallback to using the highlight attribute if no ID is available
+      const selector = `[browser-user-highlight-id="playwright-highlight-${highlightIndex}"]`;
+      return this.page.locator(selector);
+    }
+    
+    return this.page.locator(`#${details.attributes.id}`);
   }
 
   @BrowserAction(
@@ -180,9 +211,7 @@ export class BrowserAgent {
       return `Could not parse highlightIndex from "${args}". Must be a number.`;
     }
 
-    const selector = `[browser-user-highlight-id="playwright-highlight-${highlightIndex}"]`;
-
-    const elementHandle = await this.page.$(selector);
+    const elementHandle = await this.getElementHandleByHighlightIndex(highlightIndex);
 
     if (!elementHandle) {
       return `Error: No element found with highlightIndex = ${highlightIndex}`;
@@ -214,8 +243,7 @@ export class BrowserAgent {
       return `Could not parse highlightIndex from "${args}".`;
     }
 
-    const selector = `[browser-user-highlight-id="playwright-highlight-${highlightIndex}"]`;
-    const elementHandle = await this.page.$(selector);
+    const elementHandle = await this.getElementHandleByHighlightIndex(highlightIndex);
 
     if (!elementHandle) {
       return `Error: No element found with highlightIndex = ${highlightIndex}`;
@@ -243,10 +271,12 @@ export class BrowserAgent {
     if (!text) {
       return `No text provided. Use "5||Hello world."`;
     }
-    const selector = `[browser-user-highlight-id="playwright-highlight-${highlightIndex}"]`;
-    const elementHandle = await this.page.$(selector);
+
+    const elementHandle = await this.getElementHandleByHighlightIndex(highlightIndex);
+
     if (!elementHandle)
       return `Error: No element found for highlightIndex ${highlightIndex}`;
+
     await elementHandle.fill(text);
     await this.updateDomRepresentation();
     return `Filled element at highlightIndex ${highlightIndex} with "${text}"`;
