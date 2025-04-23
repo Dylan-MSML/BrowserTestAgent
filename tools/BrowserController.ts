@@ -74,16 +74,20 @@ export class BrowserAgent {
 
   @BrowserAction(
     "listClickableElements",
-    "Returns a JSON array of { highlightIndex, snippet } for clickable elements. if there is a label nearby, it will be above the current element.",
+    "Returns a JSON array of { highlightIndex, snippet } for clickable elements with a screenshot of the page.",
   )
   public async listClickableElements(_args: string): Promise<string> {
     if (!this.domSnapshot) {
       return "No DOM snapshot available. Use visitUrl first.";
     }
 
-    this.page?.waitForLoadState("networkidle");
-    this.page?.waitForLoadState("load");
-    this.page?.waitForLoadState("domcontentloaded");
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
+
+    this.page.waitForLoadState("networkidle");
+    this.page.waitForLoadState("load");
+    this.page.waitForLoadState("domcontentloaded");
     await this.updateDomRepresentation(true, -1, 0);
 
     const clickable: Array<{
@@ -112,23 +116,51 @@ export class BrowserAgent {
     };
     walk(this.domSnapshot);
 
-    return JSON.stringify(clickable, null, 2);
+    // Take screenshot
+    const screenshotBuffer = await this.page.screenshot();
+    const base64Image = Buffer.from(screenshotBuffer).toString("base64");
+
+    return JSON.stringify(
+      {
+        elements: clickable,
+        base64Image: base64Image,
+        message: "Clickable elements with page screenshot",
+      },
+      null,
+      2,
+    );
   }
 
   @BrowserAction(
     "getElementDetails",
-    "Provide detail about a single element by highlightIndex.",
+    "Provide detail about a single element by highlightIndex with a screenshot.",
   )
   public async getElementDetails(args: string): Promise<string> {
     if (!this.domSnapshot) {
       return "No DOM snapshot available. Use visitUrl first.";
     }
 
-    const detail = await this.elementDetailsByHighlightIndex(
-      parseInt(args.trim(), 10),
-    );
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
 
-    return JSON.stringify(detail, null, 2);
+    const highlightIndex = parseInt(args.trim(), 10);
+    const detail = await this.elementDetailsByHighlightIndex(highlightIndex);
+
+    // Take screenshot with the element highlighted
+    await this.updateDomRepresentation(true, highlightIndex, 0);
+    const screenshotBuffer = await this.page.screenshot();
+    const base64Image = Buffer.from(screenshotBuffer).toString("base64");
+
+    return JSON.stringify(
+      {
+        element: detail,
+        base64Image: base64Image,
+        message: `Element details for highlightIndex ${highlightIndex}`,
+      },
+      null,
+      2,
+    );
   }
 
   private async elementDetailsByHighlightIndex(
@@ -186,14 +218,41 @@ export class BrowserAgent {
     }
 
     const details = await this.elementDetailsByHighlightIndex(highlightIndex);
-    
-    if (!details || !details.attributes.id) {
-      // Fallback to using the highlight attribute if no ID is available
-      const selector = `[browser-user-highlight-id="playwright-highlight-${highlightIndex}"]`;
-      return this.page.locator(selector);
+
+    console.log("Element details: ", details);
+    if (!details) {
+      console.log("No details found for highlightIndex: ", highlightIndex);
+      const selector = `browser-user-highlight-id="playwright-highlight-${highlightIndex}"`;
+      return this.page.locator(selector).first();
     }
-    
-    return this.page.locator(`#${details.attributes.id}`);
+    if (details.tagName === "button") {
+      if (details.attributes.role) {
+        return this.page
+          .getByRole(details.attributes.role, { name: details.textNearby })
+          .first();
+      }
+      return this.page
+        .getByRole(details.tagName, { name: details.textNearby })
+        .first();
+    }
+
+    if (details.tagName === "a") {
+      return this.page.getByText(details.textNearby).first();
+    }
+
+    if (details.attributes.id) {
+      console.log("ID found: ", details.attributes.id);
+      return this.page.locator(`#${details.attributes.id}`);
+    }
+
+    if (details.attributes.class) {
+      console.log("Class found: ", details.attributes.class);
+      return this.page.locator(`.${details.attributes.class}`);
+    }
+
+    return this.page.locator(
+      `#${details.attributes.id ?? details.attributes.class}`,
+    );
   }
 
   @BrowserAction(
@@ -211,23 +270,37 @@ export class BrowserAgent {
       return `Could not parse highlightIndex from "${args}". Must be a number.`;
     }
 
-    const elementHandle = await this.getElementHandleByHighlightIndex(highlightIndex);
+    const elementHandle =
+      await this.getElementHandleByHighlightIndex(highlightIndex);
 
+    console.log(
+      "=================================================================================================================================================================",
+    );
+    console.log("Element handle: ", elementHandle);
+
+    console.log(
+      "=================================================================================================================================================================",
+    );
     if (!elementHandle) {
       return `Error: No element found with highlightIndex = ${highlightIndex}`;
     }
 
-    await elementHandle.click();
-
+    try {
+      await elementHandle.click({ timeout: 5000 });
+    } catch (e) {
+      console.log(
+        `Click intercepted, trying JavaScript click for element ${highlightIndex}`,
+      );
+      console.log("Error: ", e);
+    }
     await this.page.waitForLoadState("networkidle", { timeout: 6000 });
-
-    //sleep for 3 seconds to allow the page load
-    await new Promise((resolve) => setTimeout(resolve, 3000));
 
     await this.updateDomRepresentation(true, -1, 0);
 
-    return `Clicked element with highlightIndex = ${highlightIndex}.`;
+    return `Clicked element with highlightIndex = ${highlightIndex}.
+        new state: ${this.listClickableElements("")}`;
   }
+
   @BrowserAction(
     "openDropdown",
     "Opens a dropdown or autocomplete input and updates the DOM snapshot. e.g. openDropdown 5",
@@ -243,7 +316,8 @@ export class BrowserAgent {
       return `Could not parse highlightIndex from "${args}".`;
     }
 
-    const elementHandle = await this.getElementHandleByHighlightIndex(highlightIndex);
+    const elementHandle =
+      await this.getElementHandleByHighlightIndex(highlightIndex);
 
     if (!elementHandle) {
       return `Error: No element found with highlightIndex = ${highlightIndex}`;
@@ -272,7 +346,8 @@ export class BrowserAgent {
       return `No text provided. Use "5||Hello world."`;
     }
 
-    const elementHandle = await this.getElementHandleByHighlightIndex(highlightIndex);
+    const elementHandle =
+      await this.getElementHandleByHighlightIndex(highlightIndex);
 
     if (!elementHandle)
       return `Error: No element found for highlightIndex ${highlightIndex}`;
@@ -286,6 +361,110 @@ export class BrowserAgent {
   public async closeBrowser(_args: string): Promise<string> {
     await this.close();
     return "Browser closed successfully.";
+  }
+
+  public async getCurrentUrl(): Promise<string> {
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
+    return this.page.url();
+  }
+
+  @BrowserAction(
+    "takeScreenshot",
+    "Takes a screenshot of the current page and encodes it as base64 for OpenAI vision.",
+  )
+  public async takeScreenshot(_args: string): Promise<string> {
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
+
+    const screenshotBuffer = await this.page.screenshot();
+    const base64Image = Buffer.from(screenshotBuffer).toString("base64");
+
+    return JSON.stringify({
+      base64Image: base64Image,
+      message: "Screenshot taken successfully.",
+    });
+  }
+
+  @BrowserAction(
+    "analyzeScreenshot",
+    "Takes a screenshot and sends it to OpenAI Vision API for analysis.",
+  )
+  public async analyzeScreenshot(args: string): Promise<string> {
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
+
+    console.log("Screenshot args: ", args);
+    const prompt =
+      args.trim() ||
+      "What is shown in this screenshot? if there is text, always extract it. be as comprehensive as possible.";
+    const screenshotBuffer = await this.page.screenshot();
+    const base64Image = Buffer.from(screenshotBuffer).toString("base64");
+
+    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+    if (!OPENAI_API_KEY) {
+      throw new Error("Missing OPENAI_API_KEY environment variable.");
+    }
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:image/jpeg;base64,${base64Image}`,
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Error calling OpenAI API: ${errorText}`);
+    }
+
+    const data = await response.json();
+    return data.choices[0].message.content;
+  }
+
+  @BrowserAction(
+    "saveScreenshot",
+    "Takes a screenshot and saves it to a file. Format: saveScreenshot filename.png",
+  )
+  public async saveScreenshot(args: string): Promise<string> {
+    if (!this.page) {
+      throw new Error("No Page found. Did you call init()?");
+    }
+
+    const filename = args.trim() || `screenshot-${Date.now()}.png`;
+    const screenshotBuffer = await this.page.screenshot();
+
+    await Bun.write(filename, screenshotBuffer);
+
+    return `Screenshot saved to ${filename}`;
+  }
+
+  public static async encodeImageToBase64(filePath: string): Promise<string> {
+    const file = Bun.file(filePath);
+    const arrayBuffer = await file.arrayBuffer();
+    return Buffer.from(arrayBuffer).toString("base64");
   }
 
   private getAllText(node: ElementNode | null): string {

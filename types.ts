@@ -1,8 +1,33 @@
+export type TextContent = {
+  type: "text";
+  text: string;
+};
+
+export type ImageContent = {
+  type: "image_url";
+  image_url: {
+    url: string;
+  };
+};
+
+export type Content = string | (TextContent | ImageContent)[];
+
 export type Message = {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: Content;
   isDomRepresentation?: boolean;
+  bug?: BugReport;
 };
+
+export interface BugReport {
+  severity: "high" | "medium" | "low";
+  description: string;
+  steps: string;
+  expected: string;
+  actual: string;
+  url?: string;
+  timestamp?: string;
+}
 
 export interface OpenAIChatRequest {
   model: string;
@@ -20,7 +45,7 @@ export interface Tool {
 export interface OpenAIResponse {
   choices: Array<{
     message: {
-      content: string;
+      content: Content;
     };
   }>;
 }
