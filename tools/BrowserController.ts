@@ -7,6 +7,7 @@ import {
 import getDomRepresentation from "./utils/dom-representation";
 import type { DomTree, ElementNode, TextNode } from "../types";
 import { BrowserAction } from "../prompts/ActionRegistry";
+import { Logger } from "./utils/Logger.ts";
 
 export class BrowserAgent {
   private browser: Browser | null = null;
@@ -219,9 +220,9 @@ export class BrowserAgent {
 
     const details = await this.elementDetailsByHighlightIndex(highlightIndex);
 
-    console.log("Element details: ", details);
+    Logger.debug("Element details: ", details);
     if (!details) {
-      console.log("No details found for highlightIndex: ", highlightIndex);
+      Logger.debug("No details found for highlightIndex: ", highlightIndex);
       const selector = `browser-user-highlight-id="playwright-highlight-${highlightIndex}"`;
       return this.page.locator(selector).first();
     }
@@ -241,12 +242,12 @@ export class BrowserAgent {
     }
 
     if (details.attributes.id) {
-      console.log("ID found: ", details.attributes.id);
+      Logger.debug("ID found: ", details.attributes.id);
       return this.page.locator(`#${details.attributes.id}`);
     }
 
     if (details.attributes.class) {
-      console.log("Class found: ", details.attributes.class);
+      Logger.debug("Class found: ", details.attributes.class);
       return this.page.locator(`.${details.attributes.class}`);
     }
 
@@ -273,12 +274,12 @@ export class BrowserAgent {
     const elementHandle =
       await this.getElementHandleByHighlightIndex(highlightIndex);
 
-    console.log(
+    Logger.debug(
       "=================================================================================================================================================================",
     );
-    console.log("Element handle: ", elementHandle);
+    Logger.debug("Element handle: ", elementHandle);
 
-    console.log(
+    Logger.debug(
       "=================================================================================================================================================================",
     );
     if (!elementHandle) {
@@ -288,10 +289,10 @@ export class BrowserAgent {
     try {
       await elementHandle.click({ timeout: 5000 });
     } catch (e) {
-      console.log(
+      Logger.debug(
         `Click intercepted, trying JavaScript click for element ${highlightIndex}`,
       );
-      console.log("Error: ", e);
+      Logger.debug("Error: ", e);
     }
     await this.page.waitForLoadState("networkidle", { timeout: 6000 });
 
@@ -357,6 +358,47 @@ export class BrowserAgent {
     return `Filled element at highlightIndex ${highlightIndex} with "${text}"`;
   }
 
+  // @BrowserAction(
+  //   "askForMoreTests",
+  //   "Asks the user if they want to continue testing with a new test or exit."
+  // )
+  public async askForMoreTests(args: string): Promise<string> {
+    const prompt =
+      args.trim() ||
+      "Would you like to continue testing something else? (yes/no)";
+
+    Logger.info("\n[Agent Question]:", prompt);
+
+    // Read user input from command line
+    Logger.info("Please provide your response:");
+    const userInput = await new Promise<string>((resolve) => {
+      process.stdin.once("data", (data) => {
+        resolve(data.toString().trim().toLowerCase());
+      });
+    });
+
+    if (
+      userInput === "no" ||
+      userInput === "n" ||
+      userInput === "exit" ||
+      userInput === "quit"
+    ) {
+      return "User wants to end the testing session.";
+    } else {
+      const followupQuestion = "What would you like to test next?";
+      Logger.info("\n[Agent Question]:", followupQuestion);
+      Logger.info("Please provide your response:");
+
+      const nextTestInput = await new Promise<string>((resolve) => {
+        process.stdin.once("data", (data) => {
+          resolve(data.toString().trim());
+        });
+      });
+
+      return `User wants to continue testing. New test request: ${nextTestInput}`;
+    }
+  }
+
   @BrowserAction("closeBrowser", "Closes the current browser session")
   public async closeBrowser(_args: string): Promise<string> {
     await this.close();
@@ -368,6 +410,48 @@ export class BrowserAgent {
       throw new Error("No Page found. Did you call init()?");
     }
     return this.page.url();
+  }
+
+  @BrowserAction(
+    "askUserInput",
+    "Asks the user for input about what to test and how to navigate to it. Should be used at the beginning of testing. Can specify a custom question to ask the user.",
+  )
+  public async askUserInput(args: string): Promise<string> {
+    try {
+      const parsedArgs = JSON.parse(args);
+      const question =
+        parsedArgs.question ||
+        "What would you like me to test? Please provide details about what to test and how to reach it.";
+
+      Logger.info("\n[Agent Question]:", question);
+
+      // Read user input from command line
+      Logger.info("Please provide your response:");
+      const userInput = await new Promise<string>((resolve) => {
+        process.stdin.once("data", (data) => {
+          resolve(data.toString().trim());
+        });
+      });
+
+      return `User provided the following information: ${userInput}`;
+    } catch (e) {
+      // Fallback for string input
+      const question =
+        args.trim() ||
+        "What would you like me to test? Please provide details about what to test and how to reach it.";
+
+      Logger.info("\n[Agent Question]:", question);
+
+      // Read user input from command line
+      Logger.info("Please provide your response:");
+      const userInput = await new Promise<string>((resolve) => {
+        process.stdin.once("data", (data) => {
+          resolve(data.toString().trim());
+        });
+      });
+
+      return `User provided the following information: ${userInput}`;
+    }
   }
 
   @BrowserAction(
@@ -397,7 +481,7 @@ export class BrowserAgent {
       throw new Error("No Page found. Did you call init()?");
     }
 
-    console.log("Screenshot args: ", args);
+    Logger.debug("Screenshot args: ", args);
     const prompt =
       args.trim() ||
       "What is shown in this screenshot? if there is text, always extract it. be as comprehensive as possible.";

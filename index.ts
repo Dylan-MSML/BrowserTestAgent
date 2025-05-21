@@ -3,6 +3,7 @@ import { TestPlanner } from "./tools/TestPlanner.ts";
 import { getRegisteredActions } from "./prompts/ActionRegistry.ts";
 import { systemPrompt } from "./prompts/prompts.ts";
 import type { Message, OpenAIChatRequest, OpenAIResponse } from "./types.ts";
+import { Logger } from "./tools/utils/Logger.ts";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
@@ -40,6 +41,14 @@ async function callOpenAI(messages: Message[]): Promise<string> {
       ? data.choices[0].message.content
       : JSON.stringify(data.choices[0].message.content);
   return assistantText;
+}
+
+function tryParseJSON(str: string): any {
+  try {
+    return JSON.parse(str);
+  } catch (e) {
+    return null;
+  }
 }
 
 function parseToolInvocation(message: string): {
@@ -80,17 +89,16 @@ function parseToolInvocation(message: string): {
       };
     }
   } catch (err) {
-    console.error("Failed to parse JSON tool invocation:", err);
+    Logger.error("Failed to parse JSON tool invocation:", err);
   }
   return null;
 }
 
 async function main() {
   const userPrompt = process.argv.slice(2).join(" ");
-  if (!userPrompt) {
-    console.error("Usage: bun run index.ts  -- 'Your question or command'");
-    return;
-  }
+  const defaultPrompt = "Start web testing";
+
+  Logger.setDebugMode(process.env.DEBUG === "true");
 
   const agent = new BrowserAgent();
   await agent.init(false);
@@ -99,7 +107,7 @@ async function main() {
 
   let messages: Message[] = [
     { role: "system", content: systemPrompt },
-    { role: "user", content: userPrompt },
+    { role: "user", content: userPrompt || defaultPrompt },
   ];
 
   let stepCount = 0;
@@ -109,10 +117,10 @@ async function main() {
     stepCount++;
 
     const response = await callOpenAI(messages);
-    console.log("\nLLM Agent response:\n", response);
+    Logger.debug("\nLLM Agent response:\n", response);
 
     const invocation = parseToolInvocation(response);
-    console.log("Parsed tool invocation:", invocation);
+    Logger.debug("Parsed tool invocation:", invocation);
 
     if (invocation) {
       const toolDef = getRegisteredActions().find(
@@ -120,11 +128,11 @@ async function main() {
       );
 
       if (!toolDef) {
-        console.log(`\nUnknown tool: '${invocation.tool}'. No action found.\n`);
+        Logger.info(`\nUnknown tool: '${invocation.tool}'. No action found.\n`);
         break;
       }
 
-      console.log(
+      Logger.debug(
         `Invoking tool '${invocation.tool}' with args: ${invocation.args}`,
       );
 
@@ -138,17 +146,14 @@ async function main() {
       const toolIsDomRepresentation =
         invocation.tool === "getInteractiveDomRepresentation";
 
-      // Handle special case for processScreenshot
       if (invocation.tool === "processScreenshot" && invocation.base64Image) {
-        console.log("\nProcessing screenshot...");
+        Logger.debug("\nProcessing screenshot...");
 
-        // Push assistant response without the base64 data to avoid bloating the console
         messages.push({
           role: "assistant",
           content: "Taking a screenshot...",
         });
 
-        // Use the base64 image in the next user message to OpenAI
         messages.push({
           role: "user",
           content: [
@@ -168,16 +173,14 @@ async function main() {
         continue;
       }
 
-      // Handle bug reporting
       if (invocation.bug) {
-        console.log("\n🐛 BUG REPORT 🐛");
-        console.log("Severity:", invocation.bug.severity);
-        console.log("Description:", invocation.bug.description);
-        console.log("Steps to reproduce:", invocation.bug.steps);
-        console.log("Expected behavior:", invocation.bug.expected);
-        console.log("Actual behavior:", invocation.bug.actual);
+        Logger.info("\n🐛 BUG REPORT 🐛");
+        Logger.info("Severity:", invocation.bug.severity);
+        Logger.info("Description:", invocation.bug.description);
+        Logger.info("Steps to reproduce:", invocation.bug.steps);
+        Logger.info("Expected behavior:", invocation.bug.expected);
+        Logger.info("Actual behavior:", invocation.bug.actual);
 
-        // Store bug in messages
         messages.push({
           role: "assistant",
           content: response,
@@ -187,18 +190,16 @@ async function main() {
         messages.push({ role: "assistant", content: response });
       }
 
-      console.log("\nTool result:\n", toolResult);
+      Logger.debug("\nTool result:\n", toolResult);
 
-      // Check if the result contains a base64 image
       let parsedResult: any;
       try {
         parsedResult = JSON.parse(toolResult);
         if (parsedResult.base64Image) {
-          console.log(
+          Logger.debug(
             "\nDetected base64 image in result, sending to OpenAI Vision API...",
           );
 
-          // For listClickableElements, we need to preserve the elements data
           let textPrompt =
             "Here's a screenshot of the current page. What do you see in this image?";
 
@@ -236,30 +237,59 @@ async function main() {
 
           continue;
         }
-      } catch (e) {
-        // Not JSON or doesn't have base64Image, continue as normal
-      }
+      } catch (e) {}
 
-      // Normal flow for other tools
       messages.push({
         role: "user",
         content: toolResult,
         isDomRepresentation: toolIsDomRepresentation ? true : undefined,
       });
     } else {
-      console.log("\nFINAL ANSWER:\n", response);
-      break;
+      const possibleJson = tryParseJSON(response);
+      if (
+        possibleJson &&
+        possibleJson.reasoning &&
+        possibleJson.reasoning.includes("completed")
+      ) {
+        Logger.info("\nTEST SUMMARY:\n", response);
+        continue;
+      } else if (response.includes("User wants to end the testing session")) {
+        Logger.info("\nFINAL ANSWER:\n", response);
+        break;
+      } else if (response.includes("User wants to continue testing")) {
+        stepCount = 0;
+        Logger.info("\nContinuing with new test...\n");
+        continue;
+      } else {
+        Logger.info("\nFINAL ANSWER:\n", response);
+        break;
+      }
     }
 
     if (stepCount >= maxSteps) {
-      console.warn(
+      Logger.warn(
         `Reached max steps (${maxSteps}), stopping to prevent infinite loop.`,
       );
-      break;
+      Logger.info(
+        "\nWould you like to continue despite reaching the step limit? (yes/no)",
+      );
+
+      const userInput = await new Promise<string>((resolve) => {
+        process.stdin.once("data", (data) => {
+          resolve(data.toString().trim().toLowerCase());
+        });
+      });
+
+      if (userInput === "yes" || userInput === "y") {
+        stepCount = 0;
+        continue;
+      } else {
+        break;
+      }
     }
   }
 
   await agent.close();
 }
 
-main().catch((err) => console.error("Error in main:", err));
+main().catch((err) => Logger.error("Error in main:", err));

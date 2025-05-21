@@ -27,10 +27,10 @@ export class TestPlanner {
     this.browserAgent = browserAgent;
   }
 
-  // @BrowserAction(
-  //   "createTestPlan",
-  //   "Creates a comprehensive test plan for an application or specific feature. Specify what to test, e.g., 'login form', 'checkout process'."
-  // )
+  @BrowserAction(
+    "createTestPlan",
+    "Creates a comprehensive test plan for an application or specific feature. Specify what to test, e.g., 'login form', 'checkout process'.",
+  )
   public async createTestPlan(args: string): Promise<string> {
     const testTarget = args.trim();
     if (!testTarget) {
@@ -45,10 +45,10 @@ export class TestPlanner {
     return JSON.stringify(plan, null, 2);
   }
 
-  // @BrowserAction(
-  //   "startTest",
-  //   "Begins executing a specific test case from the test plan. Format: 'TestCaseID'",
-  // )
+  @BrowserAction(
+    "startTest",
+    "Begins executing a specific test case from the test plan. Format: 'TestCaseID'",
+  )
   public async startTest(args: string): Promise<string> {
     const testCaseId = args.trim();
     if (!testCaseId) {
