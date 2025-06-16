@@ -1,5 +1,12 @@
 import type { ElementNode, RectCoordinates, Viewport } from "../../types";
 
+/*
+ *
+ * this function was taken from https://github.com/browser-use/browser-use
+ * and modified to add typing
+ *
+ * */
+
 const getDomRepresentation = (args: {
   doHighlightElements: boolean;
   focusHighlightIndex: number;
