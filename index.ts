@@ -4,13 +4,36 @@ import { getRegisteredActions } from "./prompts/ActionRegistry.ts";
 import { systemPrompt } from "./prompts/prompts.ts";
 import type { Message, OpenAIChatRequest, OpenAIResponse } from "./types.ts";
 import { Logger } from "./tools/utils/Logger.ts";
+import * as readline from "readline";
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+let OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-if (!OPENAI_API_KEY) {
-  throw new Error(
-    "Missing OPENAI_API_KEY env variable. Please set it before running the script.",
-  );
+async function promptForApiKey(): Promise<string> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question("Please enter your OpenAI API key: ", (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
+async function ensureApiKey(): Promise<void> {
+  if (!OPENAI_API_KEY) {
+    console.log("No OpenAI API key found in environment variables.");
+    OPENAI_API_KEY = await promptForApiKey();
+    
+    if (!OPENAI_API_KEY) {
+      throw new Error("OpenAI API key is required to run this application.");
+    }
+    
+    process.env.OPENAI_API_KEY = OPENAI_API_KEY;
+    console.log("API key set successfully!");
+  }
 }
 
 async function callOpenAI(messages: Message[]): Promise<string> {
