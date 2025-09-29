@@ -358,47 +358,6 @@ export class BrowserAgent {
     return `Filled element at highlightIndex ${highlightIndex} with "${text}"`;
   }
 
-  // @BrowserAction(
-  //   "askForMoreTests",
-  //   "Asks the user if they want to continue testing with a new test or exit."
-  // )
-  public async askForMoreTests(args: string): Promise<string> {
-    const prompt =
-      args.trim() ||
-      "Would you like to continue testing something else? (yes/no)";
-
-    Logger.info("\n[Agent Question]:", prompt);
-
-    // Read user input from command line
-    Logger.info("Please provide your response:");
-    const userInput = await new Promise<string>((resolve) => {
-      process.stdin.once("data", (data) => {
-        resolve(data.toString().trim().toLowerCase());
-      });
-    });
-
-    if (
-      userInput === "no" ||
-      userInput === "n" ||
-      userInput === "exit" ||
-      userInput === "quit"
-    ) {
-      return "User wants to end the testing session.";
-    } else {
-      const followupQuestion = "What would you like to test next?";
-      Logger.info("\n[Agent Question]:", followupQuestion);
-      Logger.info("Please provide your response:");
-
-      const nextTestInput = await new Promise<string>((resolve) => {
-        process.stdin.once("data", (data) => {
-          resolve(data.toString().trim());
-        });
-      });
-
-      return `User wants to continue testing. New test request: ${nextTestInput}`;
-    }
-  }
-
   @BrowserAction("closeBrowser", "Closes the current browser session")
   public async closeBrowser(_args: string): Promise<string> {
     await this.close();
@@ -526,23 +485,6 @@ export class BrowserAgent {
 
     const data = await response.json();
     return data.choices[0].message.content;
-  }
-
-  @BrowserAction(
-    "saveScreenshot",
-    "Takes a screenshot and saves it to a file. Format: saveScreenshot filename.png",
-  )
-  public async saveScreenshot(args: string): Promise<string> {
-    if (!this.page) {
-      throw new Error("No Page found. Did you call init()?");
-    }
-
-    const filename = args.trim() || `screenshot-${Date.now()}.png`;
-    const screenshotBuffer = await this.page.screenshot();
-
-    await Bun.write(filename, screenshotBuffer);
-
-    return `Screenshot saved to ${filename}`;
   }
 
   public static async encodeImageToBase64(filePath: string): Promise<string> {
