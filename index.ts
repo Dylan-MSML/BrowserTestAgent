@@ -166,9 +166,6 @@ async function main() {
         toolResult = `Error: ${e.message}`;
       }
 
-      const toolIsDomRepresentation =
-        invocation.tool === "getInteractiveDomRepresentation";
-
       if (invocation.tool === "processScreenshot" && invocation.base64Image) {
         Logger.debug("\nProcessing screenshot...");
 
@@ -265,7 +262,6 @@ async function main() {
       messages.push({
         role: "user",
         content: toolResult,
-        isDomRepresentation: toolIsDomRepresentation ? true : undefined,
       });
     } else {
       const possibleJson = tryParseJSON(response);
