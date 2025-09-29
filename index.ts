@@ -97,19 +97,6 @@ function parseToolInvocation(message: string): {
         base64Image: parsed.base64Image || undefined,
       };
     }
-
-    if (
-      parsed &&
-      parsed.base64Image &&
-      typeof parsed.base64Image === "string"
-    ) {
-      return {
-        tool: "processScreenshot",
-        args: "",
-        message: parsed.message || "Screenshot taken successfully.",
-        base64Image: parsed.base64Image,
-      };
-    }
   } catch (err) {
     Logger.error("Failed to parse JSON tool invocation:", err);
   }
@@ -164,33 +151,6 @@ async function main() {
         toolResult = await toolDef.handler(agent, invocation.args);
       } catch (e: any) {
         toolResult = `Error: ${e.message}`;
-      }
-
-      if (invocation.tool === "processScreenshot" && invocation.base64Image) {
-        Logger.debug("\nProcessing screenshot...");
-
-        messages.push({
-          role: "assistant",
-          content: "Taking a screenshot...",
-        });
-
-        messages.push({
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: "I took a screenshot of the current page. What do you see in this image?",
-            },
-            {
-              type: "image_url",
-              image_url: {
-                url: `data:image/jpeg;base64,${invocation.base64Image}`,
-              },
-            },
-          ],
-        });
-
-        continue;
       }
 
       if (invocation.bug) {
