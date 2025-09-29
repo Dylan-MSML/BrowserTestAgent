@@ -2,15 +2,7 @@
 
 An LLM-based end-to-end web testing agent that can autonomously browse and test web applications.
 
-## Usage (executable)
-For Windows, run `dist/windows-x64.exe`. For macOS or Linux, run the file for your machine in the terminal:
-```bash
-./dist/<file>
-```
-
-Enter your OpenAI key when prompted.
-
-## Usage (from source)
+## Installation
 First, install Bun: https://bun.com/get. Next, install dependencies:
 ```bash
 bun install
@@ -20,6 +12,8 @@ Either place your OpenAI key in a `.env` file, or enter it when prompted after r
 ```
 OPENAI_API_KEY=...
 ```
+
+## Usage
 
 You can run the agent without any command-line arguments:
 ```bash
