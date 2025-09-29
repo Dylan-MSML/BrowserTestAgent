@@ -26,11 +26,11 @@ async function ensureApiKey(): Promise<void> {
   if (!OPENAI_API_KEY) {
     console.log("No OpenAI API key found in environment variables.");
     OPENAI_API_KEY = await promptForApiKey();
-    
+
     if (!OPENAI_API_KEY) {
       throw new Error("OpenAI API key is required to run this application.");
     }
-    
+
     process.env.OPENAI_API_KEY = OPENAI_API_KEY;
     console.log("API key set successfully!");
   }
@@ -98,7 +98,6 @@ function parseToolInvocation(message: string): {
       };
     }
 
-    // Special case for screenshot results with base64 data
     if (
       parsed &&
       parsed.base64Image &&
@@ -118,6 +117,7 @@ function parseToolInvocation(message: string): {
 }
 
 async function main() {
+  ensureApiKey();
   const userPrompt = process.argv.slice(2).join(" ");
   const defaultPrompt = "Start web testing";
 
