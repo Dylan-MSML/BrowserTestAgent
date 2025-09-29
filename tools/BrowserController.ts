@@ -487,12 +487,6 @@ export class BrowserAgent {
     return data.choices[0].message.content;
   }
 
-  public static async encodeImageToBase64(filePath: string): Promise<string> {
-    const file = Bun.file(filePath);
-    const arrayBuffer = await file.arrayBuffer();
-    return Buffer.from(arrayBuffer).toString("base64");
-  }
-
   private getAllText(node: ElementNode | null): string {
     const collectedTexts: string[] = [];
 
