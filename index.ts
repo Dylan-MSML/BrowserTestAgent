@@ -104,7 +104,7 @@ function parseToolInvocation(message: string): {
 }
 
 async function main() {
-  ensureApiKey();
+  await ensureApiKey();
   const userPrompt = process.argv.slice(2).join(" ");
   const defaultPrompt = "Start web testing";
 
